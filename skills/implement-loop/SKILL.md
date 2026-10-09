@@ -105,7 +105,7 @@ All three reviewers are read-only — they report findings, they do not edit
 code.
 
 Reviews are **criteria families** — the taxonomy lives in
-`~/agentic-dev-kit/WORKFLOW.md` → `## Review criteria family`; paste the
+`~/agentic-dev-kit/REVIEW-CRITERIA.md`; paste the
 family into each reviewer's task (the reviewer has no other access to it).
 Every finding must quote **evidence** (file + lines + verbatim excerpt from
 the diff) and carry a **severity** (`fatal` blocks, `advisory` does not).
@@ -167,7 +167,7 @@ The three reviewers are read-only and you never edit code, so the proof
 needs its own role: spawn a **prover subagent**, read-write but confined to
 a **throwaway copy** — `git worktree add ../<repo>-mutprove-<slug> HEAD`,
 a sibling directory, **never inside the repo** (a nested copy is untracked
-content in the session's own diff — WORKFLOW.md, session isolation) and
+content in the session's own diff — SESSION-ISOLATION.md) and
 never the session's working tree. Its task:
 
 1. **The target list**, built by you from the Spec reviewer's report: for

@@ -8,7 +8,7 @@
 > Campaign format (example-project stress campaign): law → negation → verification →
 > evidence → clause. **Per-feature** (domain) invariants do not live here:
 > they live in the `## System Invariants` section of the spec, produced by
-> system-architecture (see WORKFLOW.md phase 3).
+> system-architecture (see phases/3-system-architecture.md).
 
 ## Corpus audit (2026-08-05)
 
