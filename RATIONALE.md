@@ -16,6 +16,14 @@
 - **Every decision entry cites its rule location** (WORKFLOW.md section or
   skill) and its source (handoff, commit, issue).
 - WORKFLOW.md's General rules points to this document (two-way link).
+- **Since 2026-10-09 (R-001) WORKFLOW.md is an index.** In this contract
+  "WORKFLOW.md" means the index *and* every file it points to. Entries
+  written before that date are not rewritten — they cite the location at the
+  time, which maps as: "WORKFLOW.md phase N" → `phases/N-*.md` (phase 4 stays
+  in the index; the phase-7 note is in `phases/6-implement-loop.md`);
+  "`## Review criteria family`" → `REVIEW-CRITERIA.md`; "Session isolation"
+  → `SESSION-ISOLATION.md`; "General rules" and "Workflow invariants" stay
+  in `WORKFLOW.md`.
 - Append new decisions with the next `D-###` id; revise an existing decision
   in place when the rule changes, keeping the date.
 - The enforcement layer is INVARIANTS.md + audit.py; this document is the
