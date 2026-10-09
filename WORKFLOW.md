@@ -9,8 +9,9 @@
 Skills are installed where your agent loads them (Claude Code:
 `~/.claude/skills/`) and are read via `skill://<name>`, which means **read
 the file, don't invoke it**: the phase skills are user-invocation only
-(`disable-model-invocation: true`), so read the skill's `SKILL.md` before
-executing that phase — never reconstruct a skill from memory.
+(in Claude Code: `disable-model-invocation: true`), so read the skill's
+`SKILL.md` before executing that phase — never reconstruct a skill
+from memory.
 
 The tracker is the one configured for the repo (GitHub, GitLab, Linear,
 or a local tracker — `/setup-matt-pocock-skills` configures it).
