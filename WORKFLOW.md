@@ -6,10 +6,14 @@
 > file for the phase you are in. The files it points to are normative; the
 > tables below are pointers, not a summary that overrides them.
 
-Skills are installed where your agent loads them (Claude Code: `~/.claude/skills/`)
-and are read via `skill://<name>`. The
-tracker is the one configured for the repo (GitHub, GitLab, Linear, or a
-local tracker — `/setup-matt-pocock-skills` configures it).
+Skills are installed where your agent loads them (Claude Code:
+`~/.claude/skills/`) and are read via `skill://<name>`, which means **read
+the file, don't invoke it**: the phase skills are user-invocation only
+(`disable-model-invocation: true`), so read the skill's `SKILL.md` before
+executing that phase — never reconstruct a skill from memory.
+
+The tracker is the one configured for the repo (GitHub, GitLab, Linear,
+or a local tracker — `/setup-matt-pocock-skills` configures it).
 
 ## Pipeline
 
@@ -75,7 +79,9 @@ structural check.
 ## General rules
 
 - Unsure which skill to use? Read `skill://ask-matt` (router).
-- Skipped phases are annotated on the ticket/spec: "Skipped — <reason>".
+- Skipped phases are never silent: the decision is stated in the session
+  ("Phase N skipped — <reason>") and annotated on the ticket/spec:
+  "Skipped — <reason>".
 - Custom skills (implement-loop, product-review, program-design,
   system-architecture) live in `~/agentic-dev-kit/skills/` (repo:
   github.com/salvatorebottiglieri/agentic-dev-kit); installed copies in your
