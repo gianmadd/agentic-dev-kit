@@ -165,8 +165,13 @@ def write_and_stage(repo: Path, text: str) -> None:
 
 
 def install(repo: Path) -> None:
-    subprocess.run(["git", "-C", str(repo), "config", "--local",
-                    "core.hooksPath", str(HOOKS_DIR)], check=True)
+    """Point the repo-local core.hooksPath at the kit's hooks. Idempotent:
+    `git config` replaces the single value. Never touches global config."""
+    result = subprocess.run(["git", "-C", str(repo), "config", "--local",
+                             "core.hooksPath", str(HOOKS_DIR)],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise GateError(f"cannot set core.hooksPath in {repo}: {result.stderr.strip()}")
 
 
 def pre_commit(repo: Path) -> int:
@@ -185,11 +190,20 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args == ["pre-commit"]:
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, check=True)
+                             capture_output=True, text=True)
+        if top.returncode != 0:
+            print(f"gate: blocked: not inside a work tree: {top.stderr.strip()}", file=sys.stderr)
+            return 1
         return pre_commit(Path(top.stdout.strip()))
     if len(args) == 2 and args[0] == "install":
-        install(Path(args[1]))
+        try:
+            install(Path(args[1]))
+        except GateError as e:
+            print(f"gate: install failed: {e}", file=sys.stderr)
+            return 1
+        print(f"gate: installed in {args[1]} (core.hooksPath = {HOOKS_DIR})")
         return 0
+    print("usage: gate.py pre-commit | gate.py install <repo>", file=sys.stderr)
     return 2
 
 

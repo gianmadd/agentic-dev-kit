@@ -283,3 +283,42 @@ def test_report_is_staged_into_the_commit_even_when_git_commits_through_a_tempor
 
     assert result.returncode == 0, result.stderr
     assert "`pkg.new::test_only` — second" in committed_report(repo)
+
+
+# ── install ──────────────────────────────────────────────────────────
+
+
+def test_install_points_repo_local_hooks_path_at_the_kit_and_is_idempotent(tmp_path, git_env):
+    target = tmp_path / "target"
+    target.mkdir()
+    git(target, "init", "-q")
+    global_cfg = Path(git_env["GIT_CONFIG_GLOBAL"])
+    global_before = global_cfg.read_bytes()
+
+    gate.install(target)
+    first = git(target, "config", "--local", "--get-all", "core.hooksPath").stdout
+    gate.install(target)
+    second = git(target, "config", "--local", "--get-all", "core.hooksPath").stdout
+
+    assert first == second == f"{KIT / 'guards' / 'hooks'}\n"
+    assert global_cfg.read_bytes() == global_before
+
+
+def test_install_sh_gate_flag_installs_the_hook_without_touching_skills(tmp_path, git_env):
+    target = tmp_path / "target"
+    target.mkdir()
+    git(target, "init", "-q")
+    env = {**git_env, "HOME": str(tmp_path / "home"),
+           "AGENT_SKILLS_DIR": str(tmp_path / "skills")}
+
+    result = subprocess.run(["bash", str(KIT / "install.sh"), "--gate", str(target)],
+                            env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert git(target, "config", "--local", "core.hooksPath").stdout.strip() == str(KIT / "guards" / "hooks")
+    assert not (tmp_path / "skills").exists()
+
+
+def test_install_into_a_directory_that_is_not_a_repo_fails_with_a_reason(tmp_path, git_env, capsys):
+    assert gate.main(["install", str(tmp_path / "nowhere")]) == 1
+    assert "gate: install failed:" in capsys.readouterr().err
