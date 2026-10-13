@@ -118,3 +118,91 @@ def test_commit_with_one_passing_and_one_skipped_pytest_test_carries_the_skip_in
     assert "`test_sample::test_offline`" in report
     assert "needs network" in report
     assert "test_passes" not in report
+
+
+TWO_SKIPS_UNSORTED = """<testsuites><testsuite name="s">
+<testcase classname="pkg.zeta" name="test_late"><skipped message="slow"/></testcase>
+<testcase classname="pkg.alpha" name="test_ok"/>
+<testcase classname="pkg.alpha" name="test_early"><skipped message="flaky on CI"/></testcase>
+</testsuite></testsuites>"""
+
+
+def test_skips_are_read_from_the_junit_file_not_from_console_output(repo):
+    runner_config(repo, junit_runner(
+        TWO_SKIPS_UNSORTED,
+        console="SKIPPED pkg.ghost::test_console_only - printed, not in JUnit",
+    ))
+
+    assert commit(repo).returncode == 0
+    report = committed_report(repo)
+    assert "`pkg.zeta::test_late` — slow" in report
+    assert "`pkg.alpha::test_early` — flaky on CI" in report
+    assert "ghost" not in report
+
+
+def test_report_lists_skips_sorted_by_test_id(repo):
+    runner_config(repo, junit_runner(TWO_SKIPS_UNSORTED))
+
+    assert commit(repo).returncode == 0
+    report = committed_report(repo)
+    assert report.index("pkg.alpha::test_early") < report.index("pkg.zeta::test_late")
+
+
+def test_report_says_none_when_no_test_is_skipped(repo):
+    runner_config(repo, junit_runner(
+        '<testsuite><testcase classname="pkg.alpha" name="test_ok"/></testsuite>'))
+
+    assert commit(repo).returncode == 0
+    section = committed_report(repo).split("## Skipped tests", 1)[1]
+    assert section.strip() == "none"
+
+
+def test_report_says_not_configured_when_the_skips_section_is_absent(repo):
+    write_config(repo, "# no checks configured yet\n")
+
+    assert commit(repo).returncode == 0
+    section = committed_report(repo).split("## Skipped tests", 1)[1]
+    assert section.strip() == "not configured"
+
+
+def test_failing_tests_with_a_valid_junit_do_not_block_the_commit(repo):
+    runner_config(repo, junit_runner(
+        '<testsuite><testcase classname="pkg.alpha" name="test_broken">'
+        '<failure message="assert 1 == 2"/></testcase>'
+        '<testcase classname="pkg.alpha" name="test_later"><skipped message="todo"/></testcase>'
+        '</testsuite>',
+        exit_code=1,
+    ))
+
+    result = commit(repo)
+
+    assert result.returncode == 0, result.stderr
+    assert "`pkg.alpha::test_later` — todo" in committed_report(repo)
+
+
+def test_test_command_runs_without_the_git_variables_the_hook_inherits(repo):
+    # git exports GIT_INDEX_FILE (and friends) to hooks; a test suite that
+    # runs git would otherwise act on the commit's index. The runner records
+    # every GIT_* variable it sees as a skip reason.
+    runner_config(repo, """\
+        import os, sys
+        leaked = " ".join(sorted(k for k in os.environ if k.startswith("GIT_")))
+        open(sys.argv[1], "w").write(
+            '<testsuite><testcase classname="env" name="probe">'
+            f'<skipped message="leaked: {leaked}"/></testcase></testsuite>')
+        """)
+
+    assert commit(repo).returncode == 0
+    assert "`env::probe` — leaked:\n" in committed_report(repo)
+
+
+def test_clean_env_drops_every_git_variable_and_keeps_the_rest():
+    env = {
+        "GIT_DIR": "/r/.git",
+        "GIT_INDEX_FILE": "/r/.git/index",
+        "GIT_CONFIG_GLOBAL": "/x",
+        "GITHUB_TOKEN": "kept",
+        "PATH": "/usr/bin",
+    }
+
+    assert gate.clean_env(env) == {"GITHUB_TOKEN": "kept", "PATH": "/usr/bin"}
