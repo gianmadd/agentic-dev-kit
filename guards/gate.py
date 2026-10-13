@@ -48,14 +48,37 @@ class Report:
 
 
 def load_config(repo: Path) -> GateConfig:
-    data = tomllib.loads((repo / CONFIG_PATH).read_text())
+    """Read .workflow/gate.toml. A missing file is an error: an installed gate
+    without configuration checks nothing, which is inconclusive, not a pass."""
+    path = repo / CONFIG_PATH
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise GateError(f"{CONFIG_PATH} not found: the gate is installed but not configured")
+    except tomllib.TOMLDecodeError as e:
+        raise GateError(f"{CONFIG_PATH}: invalid TOML: {e}")
     skips = data.get("skips")
     if skips is None:
         return GateConfig(skips=None)
-    return GateConfig(skips=SkipsConfig(
-        command=tuple(skips["command"]),
-        junit_option=skips.get("junit_option", "--junitxml={path}"),
-    ))
+    if not isinstance(skips, dict):
+        raise GateError(f"{CONFIG_PATH}: [skips] must be a table")
+    unknown = sorted(set(skips) - {"command", "junit_option"})
+    if unknown:
+        raise GateError(f"{CONFIG_PATH}: unknown key(s) in [skips]: {', '.join(unknown)}")
+    command = skips.get("command")
+    if (not isinstance(command, list) or not command
+            or not all(isinstance(arg, str) and arg for arg in command)):
+        raise GateError(f"{CONFIG_PATH}: skips.command must be a non-empty list of strings (argv)")
+    junit_option = skips.get("junit_option", SkipsConfig.junit_option)
+    if not isinstance(junit_option, str):
+        raise GateError(f"{CONFIG_PATH}: skips.junit_option must be a string")
+    if "{path}" not in junit_option:
+        raise GateError(f"{CONFIG_PATH}: skips.junit_option must contain {{path}}")
+    try:
+        junit_option.format(path="x")
+    except (KeyError, IndexError, ValueError):
+        raise GateError(f"{CONFIG_PATH}: skips.junit_option may only use the {{path}} placeholder")
+    return GateConfig(skips=SkipsConfig(command=tuple(command), junit_option=junit_option))
 
 
 def clean_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -67,16 +90,36 @@ def clean_env(env: Mapping[str, str]) -> dict[str, str]:
 
 
 def run_skips(repo: Path, cfg: SkipsConfig) -> tuple[SkippedTest, ...]:
+    """Run the test command with a JUnit report and return the skipped tests.
+
+    A non-zero exit with a valid JUnit is not an error: failing tests are not
+    this gate's job. The command's console output goes to stderr for the
+    developer and is never parsed.
+    """
     with tempfile.TemporaryDirectory(prefix="gate-") as tmp:
         junit = Path(tmp) / "junit.xml"
         argv = [*cfg.command, cfg.junit_option.format(path=junit)]
-        subprocess.run(argv, cwd=repo, env=clean_env(os.environ),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return parse_junit(junit.read_text())
+        try:
+            run = subprocess.run(argv, cwd=repo, env=clean_env(os.environ),
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        except OSError as e:
+            raise GateError(f"test command cannot start: {cfg.command[0]}: {e.strerror or e}")
+        sys.stderr.write(run.stdout + run.stderr)
+        try:
+            xml_text = junit.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise GateError(f"test command produced no JUnit report ({' '.join(argv)})")
+        return parse_junit(xml_text)
 
 
 def parse_junit(xml_text: str) -> tuple[SkippedTest, ...]:
-    root = ET.fromstring(xml_text)
+    """Skipped test cases from a JUnit report, sorted by test id."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        raise GateError(f"JUnit report is not parsable XML: {e}")
+    if root.tag not in ("testsuites", "testsuite"):
+        raise GateError(f"JUnit report has unexpected root <{root.tag}>")
     found = []
     for case in root.iter("testcase"):
         skipped = case.find("skipped")
@@ -114,7 +157,11 @@ def write_and_stage(repo: Path, text: str) -> None:
     path = repo / REPORT_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
-    subprocess.run(["git", "-C", str(repo), "add", "--", REPORT_PATH], check=True)
+    # Inherit the hook's environment: GIT_INDEX_FILE is the index being committed.
+    result = subprocess.run(["git", "-C", str(repo), "add", "--", REPORT_PATH],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise GateError(f"cannot stage {REPORT_PATH}: {result.stderr.strip()}")
 
 
 def install(repo: Path) -> None:
@@ -123,9 +170,14 @@ def install(repo: Path) -> None:
 
 
 def pre_commit(repo: Path) -> int:
-    cfg = load_config(repo)
-    skips = run_skips(repo, cfg.skips) if cfg.skips else None
-    write_and_stage(repo, render_report(Report(skips=skips)))
+    """0 = report written and staged; 1 = a configured check cannot run (blocked)."""
+    try:
+        cfg = load_config(repo)
+        skips = run_skips(repo, cfg.skips) if cfg.skips else None
+        write_and_stage(repo, render_report(Report(skips=skips)))
+    except GateError as e:
+        print(f"gate: blocked: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

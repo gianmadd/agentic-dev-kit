@@ -206,3 +206,80 @@ def test_clean_env_drops_every_git_variable_and_keeps_the_rest():
     }
 
     assert gate.clean_env(env) == {"GITHUB_TOKEN": "kept", "PATH": "/usr/bin"}
+
+
+# ── blocking: the configured check cannot run ────────────────────────
+
+
+def assert_blocked(repo: Path, result: subprocess.CompletedProcess, reason: str) -> None:
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr  # a reason, not a crash
+    blocked = [line for line in result.stderr.splitlines() if line.startswith("gate: blocked:")]
+    assert blocked and reason in blocked[0], result.stderr
+    assert git(repo, "rev-parse", "--verify", "-q", "HEAD", check=False).returncode != 0
+
+
+def test_commit_is_blocked_when_the_test_command_cannot_start(repo):
+    write_config(repo, """\
+        [skips]
+        command = ["no-such-test-runner-xyz", "-q"]
+        """)
+
+    assert_blocked(repo, commit(repo), "no-such-test-runner-xyz")
+
+
+def test_commit_is_blocked_when_the_test_command_writes_no_junit(repo):
+    runner_config(repo, "print('SKIPPED pkg::test_x - console only')\n")
+
+    assert_blocked(repo, commit(repo), "no JUnit report")
+
+
+def test_commit_is_blocked_when_the_junit_report_is_not_parsable(repo):
+    runner_config(repo, junit_runner("<testsuite><testcase"))
+
+    assert_blocked(repo, commit(repo), "JUnit")
+
+
+def test_commit_is_blocked_when_the_config_file_is_missing(repo):
+    assert_blocked(repo, commit(repo), gate.CONFIG_PATH)
+
+
+def test_commit_is_blocked_when_the_config_is_not_valid_toml(repo):
+    write_config(repo, "[skips\ncommand = 1\n")
+
+    assert_blocked(repo, commit(repo), "invalid TOML")
+
+
+@pytest.mark.parametrize("body, reason", [
+    ('[skips]\ncommand = "pytest -q"\n', "skips.command"),
+    ('[skips]\ncommand = []\n', "skips.command"),
+    ('[skips]\ncommand = ["pytest", 1]\n', "skips.command"),
+    ('[skips]\ncommand = ["pytest"]\njunit_option = 3\n', "skips.junit_option"),
+    ('[skips]\ncommand = ["pytest"]\njunit_option = "--junitxml"\n', "{path}"),
+    ('skips = "yes"\n', "[skips]"),
+])
+def test_commit_is_blocked_when_the_config_has_wrong_types(repo, body, reason):
+    write_config(repo, body)
+
+    assert_blocked(repo, commit(repo), reason)
+
+
+# ── the report lands in the same commit ──────────────────────────────
+
+
+def test_report_is_staged_into_the_commit_even_when_git_commits_through_a_temporary_index(repo):
+    # `git commit <path>` builds the commit from a temporary index
+    # (GIT_INDEX_FILE): staging into .git/index would miss the commit.
+    runner_config(repo, junit_runner(TWO_SKIPS_UNSORTED))
+    (repo / "file.txt").write_text("v1")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "first")
+    (repo / "file.txt").write_text("v2")
+    (repo / "runner.py").write_text(textwrap.dedent(junit_runner(
+        '<testsuite><testcase classname="pkg.new" name="test_only"><skipped message="second"/></testcase></testsuite>')))
+    git(repo, "add", "runner.py")
+
+    result = git(repo, "commit", "-q", "-m", "second", "file.txt", "runner.py", check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "`pkg.new::test_only` — second" in committed_report(repo)
