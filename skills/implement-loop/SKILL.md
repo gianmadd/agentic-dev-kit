@@ -254,12 +254,13 @@ Skip when the item is API-only or the UI diff has no interaction change.
 Before the PR, run the **canonical** full-suite test and lint on the whole
 repo — not just the subagent's tests:
 
-1. **Test.** Determine the canonical command from the project's config
-   (`pyproject.toml`, `tox.ini`, `setup.cfg`, `pytest.ini` for Python; the
-   equivalent for other languages). Default scope: unit tests; the user can
-   widen with `--test-scope integration` or `all`.
-2. **Lint.** Determine the canonical linter from config (prefer `ruff` →
-   `ruff.toml`/`pyproject.toml`, then `flake8`, then `pylint`) and run it.
+1. **Test.** Use the test command the repo's agent instructions name; else
+   determine it from the project's config and CI (`package.json` scripts,
+   `Makefile`, `pyproject.toml`, `*.csproj`, Gradle, the CI workflow).
+   Default scope: unit tests; the user can widen with
+   `--test-scope integration` or `all`.
+2. **Lint.** Same for the linter: the one the instructions, the config or
+   the CI run. No linter configured → skip it and say so.
 3. **Red → fixer.** If test or lint fails, spawn a fresh fixer subagent with
    the failures verbatim, then re-review (step 2) and re-run the gate.
 4. Only proceed to the PR when test and lint are both green.
