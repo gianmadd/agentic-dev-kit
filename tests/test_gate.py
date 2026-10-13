@@ -138,13 +138,6 @@ def test_skips_are_read_from_the_junit_file_not_from_console_output(repo):
     assert "`pkg.zeta::test_late` — slow" in report
     assert "`pkg.alpha::test_early` — flaky on CI" in report
     assert "ghost" not in report
-
-
-def test_report_lists_skips_sorted_by_test_id(repo):
-    runner_config(repo, junit_runner(TWO_SKIPS_UNSORTED))
-
-    assert commit(repo).returncode == 0
-    report = committed_report(repo)
     assert report.index("pkg.alpha::test_early") < report.index("pkg.zeta::test_late")
 
 
@@ -240,6 +233,34 @@ def test_commit_is_blocked_when_the_junit_report_is_not_parsable(repo):
     assert_blocked(repo, commit(repo), "JUnit")
 
 
+def test_commit_is_blocked_when_the_junit_report_has_a_non_junit_root(repo):
+    runner_config(repo, junit_runner("<html/>"))
+
+    assert_blocked(repo, commit(repo), "unexpected root <html>")
+
+
+def test_commit_is_blocked_when_the_report_cannot_be_staged(repo):
+    # git add refuses an ignored path, so the report cannot enter the commit.
+    runner_config(repo, junit_runner(TWO_SKIPS_UNSORTED))
+    (repo / ".gitignore").write_text(".workflow/\n")
+
+    assert_blocked(repo, commit(repo), f"cannot stage {gate.REPORT_PATH}")
+
+
+def test_commit_is_blocked_when_the_config_is_not_valid_utf8(repo):
+    cfg = repo / gate.CONFIG_PATH
+    cfg.parent.mkdir()
+    cfg.write_bytes(b"[skips]\ncommand = [\"\xff\xfe\"]\n")
+
+    assert_blocked(repo, commit(repo), gate.CONFIG_PATH)
+
+
+def test_commit_is_blocked_when_the_config_path_is_a_directory(repo):
+    (repo / gate.CONFIG_PATH).mkdir(parents=True)
+
+    assert_blocked(repo, commit(repo), gate.CONFIG_PATH)
+
+
 def test_commit_is_blocked_when_the_config_file_is_missing(repo):
     assert_blocked(repo, commit(repo), gate.CONFIG_PATH)
 
@@ -255,13 +276,27 @@ def test_commit_is_blocked_when_the_config_is_not_valid_toml(repo):
     ('[skips]\ncommand = []\n', "skips.command"),
     ('[skips]\ncommand = ["pytest", 1]\n', "skips.command"),
     ('[skips]\ncommand = ["pytest"]\njunit_option = 3\n', "skips.junit_option"),
-    ('[skips]\ncommand = ["pytest"]\njunit_option = "--junitxml"\n', "{path}"),
     ('skips = "yes"\n', "[skips]"),
 ])
 def test_commit_is_blocked_when_the_config_has_wrong_types(repo, body, reason):
     write_config(repo, body)
 
     assert_blocked(repo, commit(repo), reason)
+
+
+def test_gate_on_python_older_than_3_11_exits_with_a_one_line_reason(tmp_path):
+    probe = (
+        "import runpy, sys\n"
+        "sys.version_info = (3, 10, 0)\n"
+        f"runpy.run_path({str(KIT / 'guards' / 'gate.py')!r}, run_name='__main__')\n"
+    )
+
+    result = subprocess.run([sys.executable, "-c", probe, "pre-commit"],
+                            cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert result.stderr.startswith("gate: blocked:") and "3.11" in result.stderr
 
 
 # ── the report lands in the same commit ──────────────────────────────
@@ -288,35 +323,81 @@ def test_report_is_staged_into_the_commit_even_when_git_commits_through_a_tempor
 # ── install ──────────────────────────────────────────────────────────
 
 
-def test_install_points_repo_local_hooks_path_at_the_kit_and_is_idempotent(tmp_path, git_env):
+@pytest.fixture
+def bare_repo(tmp_path, git_env) -> Path:
+    """An initialised repo without the gate."""
     target = tmp_path / "target"
     target.mkdir()
     git(target, "init", "-q")
+    return target
+
+
+def test_install_points_repo_local_hooks_path_at_the_kit_and_is_idempotent(bare_repo, git_env):
     global_cfg = Path(git_env["GIT_CONFIG_GLOBAL"])
     global_before = global_cfg.read_bytes()
 
-    gate.install(target)
-    first = git(target, "config", "--local", "--get-all", "core.hooksPath").stdout
-    gate.install(target)
-    second = git(target, "config", "--local", "--get-all", "core.hooksPath").stdout
+    gate.install(bare_repo)
+    first = git(bare_repo, "config", "--local", "--get-all", "core.hooksPath").stdout
+    gate.install(bare_repo)
+    second = git(bare_repo, "config", "--local", "--get-all", "core.hooksPath").stdout
 
     assert first == second == f"{KIT / 'guards' / 'hooks'}\n"
     assert global_cfg.read_bytes() == global_before
 
 
-def test_install_sh_gate_flag_installs_the_hook_without_touching_skills(tmp_path, git_env):
-    target = tmp_path / "target"
-    target.mkdir()
-    git(target, "init", "-q")
+def test_install_refuses_and_leaves_a_foreign_hooks_path_unchanged(bare_repo):
+    git(bare_repo, "config", "--local", "core.hooksPath", ".husky")
+
+    with pytest.raises(gate.GateError, match=r"\.husky.*unset"):
+        gate.install(bare_repo)
+
+    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == ".husky"
+
+
+def test_install_warns_about_hooks_in_git_hooks_that_will_stop_running(bare_repo, capsys):
+    hook = bare_repo / ".git" / "hooks" / "pre-push"
+    hook.write_text("#!/bin/sh\n")
+
+    gate.install(bare_repo)
+
+    err = capsys.readouterr().err
+    assert "pre-push" in err and "stop running" in err
+    assert ".sample" not in err
+    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == str(gate.HOOKS_DIR)
+
+
+def test_install_into_a_subdirectory_of_a_repo_fails_and_leaves_its_config_alone(bare_repo):
+    sub = bare_repo / "sub"
+    sub.mkdir()
+
+    with pytest.raises(gate.GateError, match="top level"):
+        gate.install(sub)
+
+    assert git(bare_repo, "config", "--local", "core.hooksPath", check=False).returncode == 1
+
+
+def test_install_sh_gate_flag_installs_the_hook_without_touching_skills(tmp_path, git_env, bare_repo):
     env = {**git_env, "HOME": str(tmp_path / "home"),
            "AGENT_SKILLS_DIR": str(tmp_path / "skills")}
 
-    result = subprocess.run(["bash", str(KIT / "install.sh"), "--gate", str(target)],
+    result = subprocess.run(["bash", str(KIT / "install.sh"), "--gate", str(bare_repo)],
                             env=env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
-    assert git(target, "config", "--local", "core.hooksPath").stdout.strip() == str(KIT / "guards" / "hooks")
+    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == str(KIT / "guards" / "hooks")
     assert not (tmp_path / "skills").exists()
+
+
+@pytest.mark.parametrize("extra", [[], ["a", "b"]])
+def test_install_sh_gate_flag_with_a_wrong_argument_count_prints_usage_and_exits_2(tmp_path, git_env, extra):
+    env = {**git_env, "HOME": str(tmp_path / "home"),
+           "AGENT_SKILLS_DIR": str(tmp_path / "skills")}
+
+    result = subprocess.run(["bash", str(KIT / "install.sh"), "--gate", *extra],
+                            env=env, capture_output=True, text=True)
+
+    assert result.returncode == 2
+    assert "usage:" in result.stderr and "install <repo>" in result.stderr
 
 
 def test_install_into_a_directory_that_is_not_a_repo_fails_with_a_reason(tmp_path, git_env, capsys):

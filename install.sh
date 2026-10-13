@@ -16,11 +16,7 @@ set -euo pipefail
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "${1:-}" == "--gate" ]]; then
-  if [[ $# -ne 2 ]]; then
-    echo "usage: ./install.sh --gate <repo>" >&2
-    exit 2
-  fi
-  exec python3 "$KIT_DIR/guards/gate.py" install "$2"
+  exec python3 "$KIT_DIR/guards/gate.py" install "${@:2}"
 fi
 SKILLS_DIR="${AGENT_SKILLS_DIR:-$HOME/.claude/skills}"
 SKILLS=(implement-loop product-review system-architecture program-design)
