@@ -394,6 +394,21 @@ def test_install_accepts_another_spelling_of_the_kit_hooks_path_as_already_insta
     assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == str(same_dir)
 
 
+def test_install_resolves_a_relative_hooks_path_against_the_repo_top_level_not_the_cwd(
+        bare_repo, tmp_path, monkeypatch):
+    relative = os.path.relpath(gate.HOOKS_DIR, bare_repo.resolve())
+    git(bare_repo, "config", "--local", "core.hooksPath", relative)
+    # Deeper than the repo: the ".." chain climbs to / and would saturate at
+    # the same depth, hiding a cwd-relative resolution.
+    elsewhere = tmp_path / "elsewhere" / "deeper"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+
+    gate.install(bare_repo)
+
+    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == relative
+
+
 def test_install_does_not_warn_about_stopped_hooks_when_setting_the_hooks_path_fails(bare_repo, capsys):
     (bare_repo / ".git" / "hooks" / "pre-push").write_text("#!/bin/sh\n")
     # An existing lock file makes `git config` refuse to write.

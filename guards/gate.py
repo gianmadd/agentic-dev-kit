@@ -13,10 +13,10 @@ if sys.version_info < (3, 11):
              + ".".join(map(str, sys.version_info[:3])))
 
 import tomllib  # noqa: E402
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Mapping
+import xml.etree.ElementTree as ET  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any, Mapping  # noqa: E402
 
 REPORT_PATH = ".workflow/gate-report.md"
 CONFIG_PATH = ".workflow/gate.toml"
@@ -187,7 +187,7 @@ def install(repo: Path) -> None:
     current = _git(repo, "config", "--local", "--default", "", "--get", "core.hooksPath",
                    what=f"read core.hooksPath in {repo}")
     # A relative hooksPath is relative to the top level, as git reads it.
-    if current and (Path(top) / current).resolve() == HOOKS_DIR.resolve():
+    if current and (Path(top) / current).resolve() == HOOKS_DIR:
         return
     if current:
         raise GateError(f"core.hooksPath is already set to {current!r} in {repo}; "
