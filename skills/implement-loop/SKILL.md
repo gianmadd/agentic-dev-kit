@@ -19,7 +19,7 @@ you orchestrate. You hand off every item to a subagent; you review their
 output; you loop until clean. At no point do you touch code yourself —
 every change, every file edit, every test runs inside a subagent.
 
-> **Agent type mapping**: This skill uses role names ("implement subagent", "reviewer subagent"). Map to your harness's concrete agent types — e.g. in OMP, use `task` for implement and `reviewer` for reviewer.
+> **Agent type mapping**: This skill uses role names ("implement subagent", "reviewer subagent", "prover subagent"). Map them to your harness's subagents — Claude Code: the Agent tool (general-purpose agent); Codex: a spawned subagent per role. Pass the model and effort the repo's agent instructions set for subagents, if any.
 
 ## 0. Setup
 
@@ -36,7 +36,7 @@ every change, every file edit, every test runs inside a subagent.
 
 ## 1. Spawn implementer
 
-Spawn an implement subagent with a fresh context window (e.g. `task` in OMP). Its task must include:
+Spawn an implement subagent with a fresh context window. Its task must include:
 
 - The full item body (title + description).
 - **TDD instruction**: tell the subagent to use test-driven development
