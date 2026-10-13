@@ -6,6 +6,7 @@ and the checks are exercised together. Git is isolated: every git process
 gets GIT_CONFIG_GLOBAL under tmp_path and GIT_CONFIG_NOSYSTEM=1.
 """
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -715,6 +716,19 @@ def test_install_resolves_a_relative_hooks_path_against_the_repo_top_level_not_t
     assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == relative
 
 
+def test_install_expands_a_home_relative_hooks_path_and_treats_it_as_already_installed(
+        bare_repo, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "kit-hooks").symlink_to(gate.HOOKS_DIR)
+    monkeypatch.setenv("HOME", str(home))
+    git(bare_repo, "config", "--local", "core.hooksPath", "~/kit-hooks")
+
+    gate.install(bare_repo)
+
+    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == "~/kit-hooks"
+
+
 def test_install_does_not_warn_about_stopped_hooks_when_setting_the_hooks_path_fails(bare_repo, capsys):
     (bare_repo / ".git" / "hooks" / "pre-push").write_text("#!/bin/sh\n")
     # An existing lock file makes `git config` refuse to write.
@@ -790,7 +804,6 @@ FINAL = "gate: final: "
 
 def copy_kit(dest: Path, *, checkout: bool) -> Path:
     """A copy of the kit's guards/ at ``dest``; committed in its own repo when ``checkout``."""
-    import shutil
     shutil.copytree(KIT / "guards", dest / "guards",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     (dest / "README.md").write_text("kit copy\n")
@@ -806,12 +819,6 @@ def copy_kit(dest: Path, *, checkout: bool) -> Path:
 def kit(tmp_path, git_env) -> Path:
     """A kit copy that is a clean git checkout."""
     return copy_kit(tmp_path / "kit", checkout=True)
-
-
-@pytest.fixture
-def plain_kit(tmp_path, git_env) -> Path:
-    """A kit copy that is not a git checkout."""
-    return copy_kit(tmp_path / "plain-kit", checkout=False)
 
 
 def run_gate(kit: Path, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -847,12 +854,12 @@ def clean(tmp_path, kit) -> Path:
     return make_repo(tmp_path / "clean", kit)
 
 
-def final(kit: Path, repo: Path) -> subprocess.CompletedProcess:
+def run_final(kit: Path, repo: Path) -> subprocess.CompletedProcess:
     return run_gate(kit, "final", str(repo))
 
 
 def test_final_on_a_clean_current_intact_repo_exits_0_and_prints_nothing(kit, clean):
-    result = final(kit, clean)
+    result = run_final(kit, clean)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "" and result.stderr == ""
@@ -872,7 +879,7 @@ def test_final_reports_uncommitted_tracked_changes_but_ignores_untracked_files(
         if change == "staged edit":
             git(clean, "add", "file.txt")
 
-    result = final(kit, clean)
+    result = run_final(kit, clean)
 
     found = [p for p in problems(result) if p.startswith("uncommitted tracked changes")]
     assert bool(found) == reported, result.stderr
@@ -882,18 +889,18 @@ def test_final_reports_uncommitted_tracked_changes_but_ignores_untracked_files(
 
 
 def test_final_says_no_report_committed_when_the_branch_was_committed_without_the_gate(kit, clean):
-    assert final(kit, clean).returncode == 0          # twin: committed through the gate
+    assert run_final(kit, clean).returncode == 0          # twin: committed through the gate
     git(clean, "rm", "-q", gate.REPORT_PATH)
     git(clean, "commit", "-q", "--no-verify", "-m", "drop the report")
 
-    result = final(kit, clean)
+    result = run_final(kit, clean)
 
     assert result.returncode == 1
     assert problems(result) == [f"no report committed: HEAD has no {gate.REPORT_PATH}"]
 
 
 def test_final_says_report_stale_with_a_diff_showing_a_skip_added_without_the_hook(kit, clean):
-    assert final(kit, clean).returncode == 0          # twin: the committed report is current
+    assert run_final(kit, clean).returncode == 0          # twin: the committed report is current
     (clean / "runner.py").write_text(textwrap.dedent(junit_runner(
         '<testsuite><testcase classname="pkg.alpha" name="test_ok"/>'
         '<testcase classname="pkg.new" name="test_hidden"><skipped message="later"/></testcase>'
@@ -901,7 +908,7 @@ def test_final_says_report_stale_with_a_diff_showing_a_skip_added_without_the_ho
     git(clean, "add", "runner.py")
     git(clean, "commit", "-q", "--no-verify", "-m", "skip a test quietly")
 
-    result = final(kit, clean)
+    result = run_final(kit, clean)
 
     assert result.returncode == 1
     assert len(problems(result)) == 1 and problems(result)[0].startswith("report stale")
@@ -920,7 +927,7 @@ def test_final_reports_a_configured_check_that_cannot_run_without_a_traceback(ki
     git(clean, "add", "-A")
     git(clean, "commit", "-q", "--no-verify", "-m", "broken runner")
 
-    result = final(kit, clean)
+    result = run_final(kit, clean)
 
     assert result.returncode == 1
     assert "Traceback" not in result.stderr
@@ -945,7 +952,7 @@ def test_final_reports_a_hook_path_not_pointing_at_the_gate_and_accepts_other_sp
                  "trailing-dot": f"{hooks}/."}.get(hooks_path, hooks_path)
         git(clean, "config", "--local", "core.hooksPath", value)
 
-    result = final(kit, clean)
+    result = run_final(kit, clean)
 
     found = [p for p in problems(result) if p.startswith("hook path not pointing at the gate")]
     assert bool(found) == reported, result.stderr
@@ -966,7 +973,7 @@ def test_final_reports_gate_files_modified_in_the_kit_checkout(kit, clean, tampe
     else:
         (kit / "README.md").write_text("edited\n")
 
-    result = final(kit, clean)
+    result = run_final(kit, clean)
 
     found = [p for p in problems(result) if p.startswith("gate files modified in the kit")]
     assert bool(found) == reported, result.stderr
@@ -974,10 +981,11 @@ def test_final_reports_gate_files_modified_in_the_kit_checkout(kit, clean, tampe
 
 
 def test_final_cannot_verify_gate_integrity_when_the_kit_is_not_a_git_checkout(
-        tmp_path, plain_kit):
+        tmp_path, git_env):
+    plain_kit = copy_kit(tmp_path / "plain-kit", checkout=False)
     repo = make_repo(tmp_path / "plain-repo", plain_kit)
 
-    result = final(plain_kit, repo)
+    result = run_final(plain_kit, repo)
 
     assert result.returncode == 1
     assert problems(result) == [
@@ -1013,7 +1021,7 @@ def test_final_reports_several_problems_in_the_specified_order(kit, tmp_path):
     with open(kit / "guards" / "gate.py", "a") as f:
         f.write("# tampered\n")
 
-    result = final(kit, repo)
+    result = run_final(kit, repo)
 
     assert result.returncode == 1
     assert [p.split(":", 1)[0] for p in problems(result)] == [
@@ -1037,14 +1045,86 @@ def test_final_recomputes_from_the_head_version_while_a_staged_bump_is_an_uncomm
     write_stale_pin(infra)
     git(repo, "add", "-A")
     assert git(repo, "commit", "-q", "-m", "pins", check=False).returncode == 0
-    assert final(kit, repo).returncode == 0
+    assert run_final(kit, repo).returncode == 0
     write_pyproject(repo, "0.0.8")
     git(repo, "add", "pyproject.toml")
 
-    result = final(kit, repo)
+    result = run_final(kit, repo)
 
     assert result.returncode == 1
     assert problems(result) == ["uncommitted tracked changes: pyproject.toml"]
+
+
+def test_final_shows_the_test_command_stdout_and_stderr_below_a_check_that_cannot_run(kit, clean):
+    (clean / "runner.py").write_text(textwrap.dedent("""\
+        import sys
+        print("marker-on-stdout")
+        print("marker-on-stderr", file=sys.stderr)
+        """))
+    git(clean, "commit", "-q", "--no-verify", "-am", "runner writes no junit")
+
+    result = run_final(kit, clean)
+
+    assert result.returncode == 1
+    assert len(problems(result)) == 1
+    assert problems(result)[0].startswith(
+        "configured check cannot run: test command produced no JUnit report")
+    lines = result.stderr.splitlines()
+    assert "  marker-on-stdout" in lines and "  marker-on-stderr" in lines
+    assert "marker-on-stderr" not in lines            # not leaked unindented to the terminal
+
+
+def test_final_with_a_runner_writing_to_stderr_on_a_clean_repo_exits_0_and_prints_nothing(kit, clean):
+    (clean / "runner.py").write_text(textwrap.dedent("""\
+        import sys
+        open(sys.argv[1], "w").write('<testsuite><testcase classname="pkg.alpha" name="test_ok"/></testsuite>')
+        print("noise-on-stderr", file=sys.stderr)
+        """))
+    git(clean, "add", "runner.py")
+    assert git(clean, "commit", "-q", "-m", "noisy runner", check=False).returncode == 0
+
+    result = run_final(kit, clean)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "" and result.stderr == ""
+
+
+def test_final_says_report_stale_when_the_committed_report_only_has_an_extra_trailing_blank_line(
+        kit, clean):
+    report = clean / gate.REPORT_PATH
+    report.write_text(report.read_text() + "\n")
+    git(clean, "commit", "-q", "--no-verify", "-am", "pad the report")
+
+    result = run_final(kit, clean)
+
+    assert result.returncode == 1
+    assert len(problems(result)) == 1 and problems(result)[0].startswith("report stale")
+
+
+def test_final_on_a_directory_that_is_not_a_repo_says_not_a_git_repository(kit, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    result = run_final(kit, plain)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert problems(result) == [f"not a git repository: {plain}"]
+
+
+def test_final_cannot_verify_gate_integrity_when_the_kit_copy_sits_inside_another_repo(
+        tmp_path, git_env):
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git(outer, "init", "-q")
+    nested_kit = copy_kit(outer / "kit", checkout=False)
+    repo = make_repo(tmp_path / "nested-repo", nested_kit)
+
+    result = run_final(nested_kit, repo)
+
+    assert result.returncode == 1
+    assert problems(result) == [
+        f"cannot verify gate integrity: the kit {nested_kit} is not a git checkout"]
 
 
 @pytest.mark.parametrize("args", [["final", "a", "b"], ["finale"]])

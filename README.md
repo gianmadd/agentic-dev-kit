@@ -144,11 +144,16 @@ bench outside git — after the last commit of a session:
 python3 ~/agentic-dev-kit/guards/gate.py final [/path/to/repo]   # default: the cwd
 ```
 
+The path may be any directory inside the repo: `final` verifies the repo's top
+level (unlike `install`, which refuses a subdirectory).
+
 It recomputes the report at `HEAD` (the same checks as the hook; versioned
 files such as `version_file` are read at `HEAD`, deploy files and the test run
 from the filesystem) and compares it with the committed one. It prints one
 line per problem on stderr as `gate: final: <problem>`, in this order:
 
+- `not a git repository` — the path is not inside a git work tree (reported
+  alone).
 - `uncommitted tracked changes` — staged or unstaged; `final` verifies the
   committed state. Untracked files are ignored (e.g. a PR description file).
 - `no report committed` — `HEAD` has no `.workflow/gate-report.md` (commits
@@ -162,7 +167,8 @@ line per problem on stderr as `gate: final: <problem>`, in this order:
   kit's `guards/hooks`.
 - `gate files modified in the kit` — `git status` of the kit checkout lists
   changes under `guards/` (edits or new files).
-- `cannot verify gate integrity` — the kit is not a git checkout.
+- `cannot verify gate integrity` — the kit is not a git checkout of its own
+  (a copy inside another repo does not count).
 
 Exit 0, with no output, only when the committed report is present and current
 and the hook intact; 1 otherwise; 2 on bad arguments.

@@ -153,7 +153,7 @@ def run_skips(repo: Path, cfg: SkipsConfig) -> tuple[SkippedTest, ...]:
         argv = [*cfg.command, cfg.junit_option.replace("{path}", str(junit))]
         try:
             subprocess.run(argv, cwd=repo, env=clean_env(os.environ),
-                           stdin=subprocess.DEVNULL, stdout=sys.stderr)
+                           stdin=subprocess.DEVNULL, stdout=sys.stderr, stderr=sys.stderr)
         except OSError as e:
             raise GateError(f"test command cannot start: {cfg.command[0]}: {e.strerror or e}")
         try:
@@ -267,15 +267,16 @@ def render_report(report: Report) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _git(repo: Path, *args: str, what: str) -> str:
+def _git(repo: Path, *args: str, what: str, strip: bool = True) -> str:
     """Run git in repo; a non-zero exit becomes GateError("cannot <what>: ...").
 
+    The output is stripped unless ``strip`` is False (exact content, column layouts).
     The hook's environment is inherited: GIT_INDEX_FILE is the index being committed.
     """
     result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
     if result.returncode != 0:
         raise GateError(f"cannot {what}: {result.stderr.strip()}")
-    return result.stdout.strip()
+    return result.stdout.strip() if strip else result.stdout
 
 
 def write_and_stage(repo: Path, text: str) -> None:
@@ -299,8 +300,8 @@ def install(repo: Path) -> None:
     if Path(top).resolve() != repo.resolve():
         raise GateError(f"{repo} is not the top level of its repository ({top}); "
                         "pass the top level")
-    current = _git(repo, "config", "--local", "--default", "", "--get", "core.hooksPath",
-                   what=f"read core.hooksPath in {repo}")
+    current = _git(repo, "config", "--local", "--type=path", "--default", "", "--get",
+                   "core.hooksPath", what=f"read core.hooksPath in {repo}")
     # A relative hooksPath is relative to the top level, as git reads it.
     if current and (Path(top) / current).resolve() == HOOKS_DIR:
         return
@@ -344,9 +345,9 @@ class Problem:
 
 def _changed_paths(repo: Path, *args: str, what: str) -> list[str]:
     """Paths listed by `git status --porcelain <args>` (renames as "old -> new")."""
-    out = _git(repo, "status", "--porcelain", *args, what=what)
-    # _git strips the output, so the first line may have lost its leading status column.
-    return [line.split(maxsplit=1)[1] for line in out.splitlines()]
+    out = _git(repo, "status", "--porcelain", *args, what=what, strip=False)
+    # Each line is "XY <path>": two status columns and a space.
+    return [line[3:] for line in out.splitlines()]
 
 
 def final_problems(repo: Path) -> tuple[Problem, ...]:
@@ -356,8 +357,8 @@ def final_problems(repo: Path) -> tuple[Problem, ...]:
     """
     try:
         repo = Path(_git(repo, "rev-parse", "--show-toplevel", what=f"find the work tree of {repo}"))
-    except GateError as e:
-        return (Problem(f"configured check cannot run: {e}"),)
+    except GateError:
+        return (Problem(f"not a git repository: {repo}"),)
     found = []
     try:
         changed = _changed_paths(repo, "--untracked-files=no", what="read git status")
@@ -367,7 +368,8 @@ def final_problems(repo: Path) -> tuple[Problem, ...]:
         if changed:
             found.append(Problem(f"uncommitted tracked changes: {', '.join(changed)}"))
     try:
-        committed = _git(repo, "show", f"HEAD:{REPORT_PATH}", what="read the committed report")
+        committed = _git(repo, "show", f"HEAD:{REPORT_PATH}", what="read the committed report",
+                         strip=False)
     except GateError:
         committed = None
         found.append(Problem(f"no report committed: HEAD has no {REPORT_PATH}"))
@@ -378,17 +380,14 @@ def final_problems(repo: Path) -> tuple[Problem, ...]:
                 recomputed = render_report(compute_report(repo, load_config(repo), rev="HEAD"))
         except GateError as e:
             console.seek(0)
-            cannot_run = Problem(f"configured check cannot run: {e}", console.read().strip())
+            found.append(Problem(f"configured check cannot run: {e}", console.read().strip()))
         else:
-            cannot_run = None
-    if cannot_run is None and committed is not None and committed + "\n" != recomputed:
-        diff = difflib.unified_diff((committed + "\n").splitlines(keepends=True),
-                                    recomputed.splitlines(keepends=True),
-                                    fromfile="committed", tofile="recomputed")
-        found.append(Problem(f"report stale: the committed {REPORT_PATH} differs from "
-                             "the recompute at HEAD", "".join(diff).rstrip("\n")))
-    if cannot_run is not None:
-        found.append(cannot_run)
+            if committed is not None and committed != recomputed:
+                diff = difflib.unified_diff(committed.splitlines(keepends=True),
+                                            recomputed.splitlines(keepends=True),
+                                            fromfile="committed", tofile="recomputed")
+                found.append(Problem(f"report stale: the committed {REPORT_PATH} differs from "
+                                     "the recompute at HEAD", "".join(diff).rstrip("\n")))
     return (*found, *hooks_problems(repo))
 
 
@@ -408,8 +407,11 @@ def hooks_problems(repo: Path) -> tuple[Problem, ...]:
             found.append(Problem("hook path not pointing at the gate: core.hooksPath is "
                                  f"{repr(current) if current else 'unset'}, expected {HOOKS_DIR}"))
     try:
-        _git(KIT_DIR, "rev-parse", "--show-toplevel", what="find the kit checkout")
+        kit_top = _git(KIT_DIR, "rev-parse", "--show-toplevel", what="find the kit checkout")
     except GateError:
+        kit_top = None
+    # A kit copy inside some other repo is not a checkout of the kit.
+    if kit_top is None or Path(kit_top).resolve() != KIT_DIR:
         found.append(Problem(f"cannot verify gate integrity: the kit {KIT_DIR} is not a git checkout"))
         return tuple(found)
     try:
