@@ -202,12 +202,18 @@ def install(repo: Path) -> None:
               file=sys.stderr)
 
 
+def compute_report(repo: Path, cfg: GateConfig, rev: str) -> Report:
+    """Run every configured check; ``rev`` is the git revision whose versioned
+    files are read (":" = the index being committed)."""
+    skips = run_skips(repo, cfg.skips) if cfg.skips else None
+    return Report(skips=skips)
+
+
 def pre_commit(repo: Path) -> int:
     """0 = report written and staged; 1 = a configured check cannot run (blocked)."""
     try:
         cfg = load_config(repo)
-        skips = run_skips(repo, cfg.skips) if cfg.skips else None
-        write_and_stage(repo, render_report(Report(skips=skips)))
+        write_and_stage(repo, render_report(compute_report(repo, cfg, rev=":")))
     except GateError as e:
         print(f"gate: blocked: {e}", file=sys.stderr)
         return 1
