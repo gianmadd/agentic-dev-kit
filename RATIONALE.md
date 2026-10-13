@@ -753,6 +753,39 @@ TARGET.md records the evolution; this document records the reasons.
 - **Source.** Session 2026-09-24, implement-loop run; both reviewer errors
   reported by the loop manager agent.
 
+## D-022 — Facts the review needs are computed by a tool into the commit, not reported by the agent (2026-10-13)
+
+- **Context.** In an A/B replay of the workflow (round 1, 2026-10-12) the
+  variant with textual reporting rules wrote the requested labels every time,
+  yet missed the actual facts (e.g. which tests were skipped) as often as the
+  variant without those rules. A check verifying that the labels are present
+  would have passed the same runs: the rules shaped the form of the report,
+  not its content.
+- **Decision.** A git pre-commit hook (`guards/gate.py`, installed with
+  `install.sh --gate <repo>`) computes the facts — first the skipped tests,
+  read from the JUnit report of the configured test command — and stages
+  them into the same commit as `.workflow/gate-report.md`. It blocks the
+  commit only when it cannot run (missing or invalid configuration, a test
+  command that cannot start, no parsable JUnit): inconclusive counts as fail.
+- **Rationale.**
+  1. **A fact computed by a tool cannot be misreported.** The review reads
+     the report from the commit; the agent neither writes nor summarises it.
+  2. **Why a git hook.** It is agent-independent — any agent, or a human,
+     committing in the repository runs it — and managed agent settings may
+     disable agent-specific hooks, while a repo-local `core.hooksPath` is
+     plain git.
+  3. **Why block only when it cannot run.** Failing tests are the canonical
+     test gate's job; a gate that silently produced no report would read
+     like a clean one.
+  4. **Known bypasses** (`--no-verify`, changing `core.hooksPath`, editing
+     the gate) are left to a later after-the-fact check; deselected tests are
+     not listed, since JUnit does not contain them and console output is not
+     parsed.
+- **Rule location.** `WORKFLOW.md` (`## Where each rule is enforced`, row
+  "Skipped tests listed in the commit by a tool"); `guards/gate.py`;
+  `README.md` ("Pre-commit gate").
+- **Source.** Issue #2 of this repository.
+
 ---
 
 ## Not a rationale yet (candidates)

@@ -65,6 +65,42 @@ project instructions file (`CLAUDE.md`, `AGENTS.md`, or your agent's
 equivalent). Then follow its phases. A typo fix, a one-line config change, or a
 question about code does not need the pipeline.
 
+## Pre-commit gate
+
+A git pre-commit hook that computes facts the review needs and stages them
+into the commit itself, so they do not depend on what the agent chooses to
+report. Install it into a repository (repo-local `core.hooksPath`, no global
+config touched; idempotent):
+
+```bash
+~/agentic-dev-kit/install.sh --gate /path/to/repo
+```
+
+Configure it in that repository's `.workflow/gate.toml`:
+
+```toml
+[skips]
+command = ["python3", "-m", "pytest", "-q"]   # argv, not a shell string
+# junit_option = "--junitxml={path}"          # default; {path} is a temp file
+```
+
+On every `git commit` the gate runs `command` plus the JUnit option (with
+every `GIT_*` variable removed from its environment), and writes
+`.workflow/gate-report.md` into the same commit: each skipped test as
+`<classname>::<name>` with its skip reason, sorted, no timestamps — `none`
+when nothing is skipped, `not configured` when `[skips]` is absent. Skips are
+read from the JUnit report only, never from console output. Deselected tests
+are not listed: JUnit does not contain them.
+
+It **blocks the commit only when a configured check cannot run**: missing
+`.workflow/gate.toml`, invalid TOML or wrong types, a test command that
+cannot start, or no parsable JUnit report. The reason is on stderr. Failing
+tests do not block — that is the canonical test gate's job, not this one's.
+
+Known bypasses: `git commit --no-verify`, changing `core.hooksPath`, editing
+the gate. Detecting them after the fact is planned (a `final` mode), not
+implemented.
+
 ## Caveats
 
 - **`audit.py` is GitHub-only** (it reads issues/PRs via the `gh` CLI). On
