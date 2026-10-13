@@ -69,12 +69,17 @@ question about code does not need the pipeline.
 
 A git pre-commit hook that computes facts the review needs and stages them
 into the commit itself, so they do not depend on what the agent chooses to
-report. Install it into a repository (repo-local `core.hooksPath`, no global
-config touched; idempotent):
+report. Requires Python >= 3.11 (`tomllib`). Install it into a repository's
+top level (repo-local `core.hooksPath`, no global config touched; idempotent):
 
 ```bash
 ~/agentic-dev-kit/install.sh --gate /path/to/repo
 ```
+
+If `core.hooksPath` is already set to something else (e.g. husky's `.husky`),
+the install refuses and changes nothing: unset it first if the gate should
+replace it. Hooks in `.git/hooks/` stop running once `core.hooksPath` is set;
+the install names any it finds.
 
 Configure it in that repository's `.workflow/gate.toml`:
 
@@ -96,6 +101,10 @@ It **blocks the commit only when a configured check cannot run**: missing
 `.workflow/gate.toml`, invalid TOML or wrong types, a test command that
 cannot start, or no parsable JUnit report. The reason is on stderr. Failing
 tests do not block — that is the canonical test gate's job, not this one's.
+
+Known limitation: with `git commit <paths>` the report lands in the commit,
+but the main index keeps the previous report afterwards (`git status` shows
+`.workflow/gate-report.md` modified) until the next commit.
 
 Known bypasses: `git commit --no-verify`, changing `core.hooksPath`, editing
 the gate. Detecting them after the fact is planned (a `final` mode), not

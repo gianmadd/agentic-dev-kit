@@ -74,7 +74,7 @@ structural check.
 | Rule change carries a RATIONALE.md entry | General rules | prompt (audit check is a candidate in RATIONALE.md) |
 | Session ends with the audit run | General rules | prompt |
 | A handoff per session (I5) | General rules | script (`audit.py` recent_handoff) |
-| Skipped tests listed in the commit by a tool, not reported by the agent | `guards/gate.py` | script (git pre-commit hook, agent-independent) |
+| Skipped tests listed in the commit by a tool, not reported by the agent | `README.md` ("Pre-commit gate") | script (`guards/gate.py`, git pre-commit hook, agent-independent) |
 | Follow-ups in a handoff carry a tracker reference (I9) | `INVARIANTS.md` | script (`audit.py` followups_tracked) |
 | A handoff names the command behind a result (I10) | `INVARIANTS.md` | script (`audit.py` handoffs_quote_commands, weak) |
 
