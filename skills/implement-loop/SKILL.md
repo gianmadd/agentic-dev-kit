@@ -269,15 +269,20 @@ repo — not just the subagent's tests:
 When all items pass review, docs are aligned, the UI pass is clean, and the
 pre-push gate is green:
 
-1. `git checkout -b <branch-name>` (descriptive, e.g. `feat-<issue-number>`)
-2. `git add` the changed files (only what belongs to the task)
-3. `git commit -m "..."` with a conventional commit message referencing the items
-4. `git push origin <branch-name>`
-5. Create a PR using the project's standard tooling (ask the user how).
-6. **Wait for CI to be green** before declaring the item done; if CI goes
+Branch names, commit messages, PR descriptions, and what you may do
+without asking (push, PRs, tracker changes) come from the repo's agent
+instructions (`AGENTS.md`). Where they say to ask first, ask and wait.
+
+1. Commit the changed files (only what belongs to the task) on a branch
+   named as the instructions say, with messages referencing the items.
+2. Push the branch and open a PR linking the items. If the instructions
+   require asking first, stop here: report the branch, its commits and the
+   gate results, and ask whether to push and open the PR.
+3. **Wait for CI to be green** before declaring the item done; if CI goes
    red, spawn a fixer, re-push, and wait again. Do not merge yourself — hand
    the PR to the user for review and merge.
-7. Close/resolve each completed item in the issue tracker.
+4. Close/resolve each completed item in the issue tracker, if the
+   instructions allow it without asking; otherwise ask.
 
 ## Dependency resolution
 
@@ -302,4 +307,5 @@ The loop is done with an item when:
 - Docs are aligned with the change (or confirmed unnecessary)
 - UI items: the browser verification pass ran (personas × edge cases)
   with no open usability findings
-- The PR is open and CI is green (I1 — CI-before-merge)
+- The PR is open and CI is green (I1 — CI-before-merge), or the user
+  chose not to push yet and has the branch and gate results
