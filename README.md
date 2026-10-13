@@ -15,6 +15,26 @@ which Claude Code loads natively and other agents can adopt.
 follows (design → product review → system architecture → tickets → program
 design → implement-loop) and the review criteria family that gates a merge.
 
+## This fork
+
+A fork of [salvatorebottiglieri/agentic-dev-kit](https://github.com/salvatorebottiglieri/agentic-dev-kit), adapted to be the Workflow of [agents-repo-setup](https://github.com/gianmadd/agents-repo-setup). That setup installs the skills per repo and writes the repo's rules (git, tracker, UI check, subagent models) in `AGENTS.md`; the skills here follow those rules instead of setting their own. Only the skills are installed: `WORKFLOW.md`, `audit.py`, the invariants and the handoffs are kept as upstream ships them, unused.
+
+Changes from upstream, all in `skills/`:
+
+- `implement-loop/criteria.md`: the review criteria, copied from `WORKFLOW.md`, so the skill no longer needs the kit in `~/agentic-dev-kit`.
+- `implement-loop`: branch names, commits, push, PRs and tracker changes follow `AGENTS.md`, asking where it says to ask; the pre-push gate uses the repo's own test and lint commands; the UI pass uses the repo's UI check; worktrees go in `.claude/worktrees/` (git-ignored), not in sibling folders; subagent roles mapped to Claude Code and Codex.
+- All skills read `GLOSSARY.md` instead of `CONTEXT.md`, as mattpocock/skills does now.
+
+### Updating from upstream
+
+```sh
+git fetch upstream
+git merge upstream/master   # never rebase: this fork is public
+git push
+```
+
+If the merge changes `## Review criteria family` in `WORKFLOW.md`, copy that section into `skills/implement-loop/criteria.md` again. Repos then pick up the update with `npx skills update -p`.
+
 ## What's in here
 
 | Path | What it is |
