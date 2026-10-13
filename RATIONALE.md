@@ -766,7 +766,7 @@ TARGET.md records the evolution; this document records the reasons.
   read from the JUnit report of the configured test command — and stages
   them into the same commit as `.workflow/gate-report.md`. It blocks the
   commit only when it cannot run — the causes are listed in README
-  § "Pre-commit gate": inconclusive counts as fail.
+  § "Pre-commit gate"; inconclusive counts as fail.
 - **Rationale.**
   1. **A fact computed by a tool cannot be misreported.** The review reads
      the report from the commit; the agent neither writes nor summarises it.
