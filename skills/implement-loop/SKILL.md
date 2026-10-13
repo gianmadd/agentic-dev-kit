@@ -241,8 +241,9 @@ code changes need documentation updates:
 
 ## 5. UI verification (only when the item touches UI)
 
-Before the PR, drive the built UI in a real browser (OMP: the `browser`
-tool) through the **personas and edge cases from the phase-2 success
+Before the PR, drive the built UI the way the repo's agent instructions say
+(their UI check: tools, platforms, logs to read; without one, a real
+browser) through the **personas and edge cases from the phase-2 success
 criteria** — at least one scenario per persona, plus the empty/error/
 loading states. This is a usability pass, not a visual one: navigate,
 submit, observe real state changes, check that nothing blocks the happy
