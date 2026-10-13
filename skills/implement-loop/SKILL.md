@@ -28,7 +28,8 @@ every change, every file edit, every test runs inside a subagent.
 - Identify the spec source per item (the item body IS the spec).
 - Check for dependencies between items — order them so no item depends on
   unmerged work. Resolve dependencies sequentially; run independent items in
-  parallel in separate git worktrees.
+  parallel in separate git worktrees under `.claude/worktrees/<slug>`
+  (git-ignored, see step 2b).
 - Note the user's **weight** for tension resolution (applies to the whole
   run): `balanced` (default — every real tension escalates to the human) or
   `--lean ponytail` / `--lean engineering`.
@@ -165,10 +166,11 @@ iteration. Skip only when the item declares no invariants and has no
 
 The three reviewers are read-only and you never edit code, so the proof
 needs its own role: spawn a **prover subagent**, read-write but confined to
-a **throwaway copy** — `git worktree add ../<repo>-mutprove-<slug> HEAD`,
-a sibling directory, **never inside the repo** (a nested copy is untracked
-content in the session's own diff — WORKFLOW.md, session isolation) and
-never the session's working tree. Its task:
+a **throwaway copy** — `git worktree add .claude/worktrees/mutprove-<slug> HEAD`,
+inside the repo so agents can write there without leaving their working
+directory, and never the session's working tree. `.claude/worktrees/` must
+be git-ignored (e.g. in `.git/info/exclude`), or the copy shows up as
+untracked content in the session's own diff. Its task:
 
 1. **The target list**, built by you from the Spec reviewer's report: for
    each declared law and each `fatal` acceptance criterion, the file and
