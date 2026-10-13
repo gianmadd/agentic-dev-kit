@@ -29,7 +29,7 @@ The issue tracker should have been provided to you — run
   statement, user stories, solution, implementation decisions, testing
   decisions, out of scope.
 - **Read existing UI patterns.** If the project is a web app, explore existing
-  pages, components, and layouts. Look at `CONTEXT.md` for domain vocabulary
+  pages, components, and layouts. Look at `GLOSSARY.md` for domain vocabulary
   and UI conventions. Check for existing design system components, CSS
   variables, or layout patterns — your mockup should match the project's
   visual language.

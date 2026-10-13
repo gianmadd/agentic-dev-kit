@@ -30,12 +30,12 @@ The issue tracker should have been provided to you — run
 - **Read the ticket.** Fetch it from the tracker. Read the full body, comments,
   acceptance criteria, and blocking edges.
 - **Read the terrain.** Explore the files and modules the ticket touches. Read
-  `CONTEXT.md` for domain vocabulary. Read relevant ADRs in `docs/adr/`. Read
+  `GLOSSARY.md` for domain vocabulary. Read relevant ADRs in `docs/adr/`. Read
   existing function signatures, types, and test patterns in the area.
 - **Classify the change.** Determine what kind of work this is (see §3). This
   decides which artifacts are worth producing.
 
-_Done when: you have read the ticket body, the relevant CONTEXT.md terms,
+_Done when: you have read the ticket body, the relevant GLOSSARY.md terms,
 and any ADRs touching the area, and you can classify the change._
 
 ### 2. Produce artifacts
@@ -115,7 +115,7 @@ function handleCreateResource(req: Request): Promise<Response>
 
 **Rules:**
 - Every function in the call-stack tree MUST have a signature here.
-- Names use the domain vocabulary from `CONTEXT.md`.
+- Names use the domain vocabulary from `GLOSSARY.md`.
 - If a function is called but not modified, reference its existing location
   ("vedi signature in src/resource/resource-service.ts") — don't repeat it.
 - Types are concrete, not generic. `Promise<Resource>`, not `Promise<T>`.
@@ -203,7 +203,7 @@ If the user corrects anything, incorporate the fix and re-append the section
 | **implement-loop** | Passes the full ticket body to the implement subagent. If `## Program Design` is present, the signatures there are contract — the subagent implements exactly those interfaces. |
 | **code-review** | The spec-axis reviewer compares the diff against the ticket body, now including the signatures. _"Signature says `createResource(...)`, but the implementation uses `save()` and returns `any`."_ |
 | `codebase-design` | Provides vocabulary (deep module, seam). Program design is the *concrete* application: "the seam is this signature." |
-| `domain-modeling` | Program design uses `CONTEXT.md` vocabulary. If a term is ambiguous, call `domain-modeling`. |
+| `domain-modeling` | Program design uses `GLOSSARY.md` vocabulary. If a term is ambiguous, call `domain-modeling`. |
 | `to-tickets` | Produces tickets. Program design takes one ticket and adds signatures to it. |
 | `prototype` | If the shape isn't clear yet, prototype first, then program-design the result. |
 | `improve-codebase-architecture` | If an architectural concern emerges ("this function is in the wrong module"), escalate it — don't resolve it here. |

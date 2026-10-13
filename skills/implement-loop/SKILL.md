@@ -230,7 +230,7 @@ code changes need documentation updates:
 1. **Identify affected docs**: grep the diff for changes that touch public
    APIs, CLI flags, config formats, environment variables, data schemas,
    architecture decisions (ADRs), or anything documented externally.
-2. **Check project conventions**: look for `CONTEXT.md`, `README.md`,
+2. **Check project conventions**: look for `GLOSSARY.md`, `README.md`,
    `docs/ARCHITECTURE.md`, `docs/adr/`, or any `*_docs/` directory that maps
    to the changed code.
 3. **Delegate doc updates**: if the diff changes something documented, spawn

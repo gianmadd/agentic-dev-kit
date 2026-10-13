@@ -27,14 +27,14 @@ The issue tracker should have been provided to you — run
 - **Read the PRD.** Fetch it from the tracker. Read the full body, user stories,
   implementation decisions, testing decisions, and out-of-scope.
 - **Read the terrain.** Explore the codebase: existing services, endpoints,
-  schemas, data models, and how they currently connect. Read `CONTEXT.md` for
+  schemas, data models, and how they currently connect. Read `GLOSSARY.md` for
   domain vocabulary. Read relevant ADRs in `docs/adr/`.
 - **Read existing architecture.** Check if there are existing Mermaid diagrams,
   endpoint docs, or data models that already describe the area. If they exist,
   start from them and show only the diff.
 
 _Done when: you have read the PRD body, surveyed the relevant codebase area,
-read CONTEXT.md terms and ADRs, and identified whether existing diagrams or
+read GLOSSARY.md terms and ADRs, and identified whether existing diagrams or
 contracts already describe the area._
 
 ### 2. Classify the architecture type
@@ -50,13 +50,13 @@ Not every feature needs all three artifacts. Classify based on the PRD:
 
 **System invariants** are produced whenever the PRD introduces state
 transitions, a data model, API contracts, or touches domain laws from
-`CONTEXT.md`/ADR — i.e. almost always. They are the properties that must
+`GLOSSARY.md`/ADR — i.e. almost always. They are the properties that must
 hold in every reachable state; they are what makes tests effective (a test
 suite that doesn't pin the invariants verifies scenarios, not laws).
 
 ### 3. Produce artifacts
 
-For each artifact type that fits, produce a draft. Use `CONTEXT.md` vocabulary
+For each artifact type that fits, produce a draft. Use `GLOSSARY.md` vocabulary
 for all names. Do **not** write implementation code — only contracts and flows.
 
 #### Mermaid sequence diagram
@@ -106,7 +106,7 @@ stateDiagram-v2
 ````
 
 **Rules:**
-- States are domain concepts from `CONTEXT.md`, not implementation states.
+- States are domain concepts from `GLOSSARY.md`, not implementation states.
 - Transitions name the action that triggers them, not the condition.
 - Use `note` blocks only for non-obvious semantics.
 - If the state machine already exists and the feature only adds one transition, use diff notation in comments.
@@ -134,7 +134,7 @@ GET /api/resources/:slug
 **Rules:**
 - Every endpoint that the sequence diagram references MUST have a contract here.
 - Include request shape, response shape, and possible errors.
-- Use the domain types from `CONTEXT.md` — if `Resource` is defined in the glossary, reference it.
+- Use the domain types from `GLOSSARY.md` — if `Resource` is defined in the glossary, reference it.
 - If the existing API follows a documented pattern (all routes return `{ data }` wrapping), follow it.
 
 #### System invariants
@@ -156,10 +156,10 @@ verified**.
 ````
 
 **Rules:**
-- **Law**: a sentence in `CONTEXT.md` vocabulary — "it must always be true that…".
+- **Law**: a sentence in `GLOSSARY.md` vocabulary — "it must always be true that…".
 - **Negation**: the check that fails when the law breaks — the exact query/assertion, not a paraphrase.
 - **Where verified**: the test file that pins it (or "da scrivere in implement-loop").
-- Derive them from the other artifacts: state machine → transition invariants; data model → structural invariants; endpoint contracts → response invariants; domain laws already in ADR/CONTEXT.md → codify them.
+- Derive them from the other artifacts: state machine → transition invariants; data model → structural invariants; endpoint contracts → response invariants; domain laws already in ADR/GLOSSARY.md → codify them.
 - **Anti-vacuity**: an invariant whose test cannot fail is an opinion. If no test can pin it, mark it `[non verificabile — opinione]` instead of pretending.
 - Only invariants that can be checked mechanically or by a deterministic test belong here — invariants that need LLM judgment belong in `## Testing Decisions`.
 
@@ -289,7 +289,7 @@ to `ready-for-agent` — or directly to `to-tickets`.
 | **implement-loop** | The implement subagent sees the full ticket body — architecture context, `## System Invariants`, and program design signatures. The invariants are test contract: their tests are written first (red), then the implementation (green). |
 | `to-spec` | Produces the PRD. System architecture evolves it — adds the `## System Architecture` section. |
 | `codebase-design` | Provides vocabulary (deep module, seam). System architecture is a different layer — connections between modules, not depth of one. |
-| `domain-modeling` | Uses `CONTEXT.md` vocabulary. If a term is ambiguous during architecture, call `domain-modeling`. |
+| `domain-modeling` | Uses `GLOSSARY.md` vocabulary. If a term is ambiguous during architecture, call `domain-modeling`. |
 | `improve-codebase-architecture` | If a structural problem emerges ("this service is too coupled"), note it but don't resolve it here. |
 
 ## When to skip
