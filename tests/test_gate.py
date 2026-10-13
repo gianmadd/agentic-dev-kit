@@ -86,6 +86,10 @@ def commit(repo: Path, message: str = "change") -> subprocess.CompletedProcess:
     return git(repo, "commit", "-q", "-m", message, check=False)
 
 
+def head(repo: Path) -> str:
+    return git(repo, "rev-parse", "HEAD").stdout
+
+
 def committed_report(repo: Path) -> str:
     return git(repo, "show", f"HEAD:{gate.REPORT_PATH}").stdout
 
@@ -208,12 +212,18 @@ def test_clean_env_drops_every_git_variable_and_keeps_the_rest():
 # ── blocking: the configured check cannot run ────────────────────────
 
 
-def assert_blocked(repo: Path, result: subprocess.CompletedProcess, reason: str) -> None:
+def assert_blocked(repo: Path, result: subprocess.CompletedProcess, reason: str,
+                   head_before: str | None = None) -> None:
+    """Blocked with ``reason`` and no commit made: HEAD is still ``head_before``
+    (or still unborn when None)."""
     assert result.returncode != 0
     assert "Traceback" not in result.stderr  # a reason, not a crash
     blocked = [line for line in result.stderr.splitlines() if line.startswith("gate: blocked:")]
     assert blocked and reason in blocked[0], result.stderr
-    assert git(repo, "rev-parse", "--verify", "-q", "HEAD", check=False).returncode != 0
+    if head_before is None:
+        assert git(repo, "rev-parse", "--verify", "-q", "HEAD", check=False).returncode != 0
+    else:
+        assert head(repo) == head_before
 
 
 def test_commit_is_blocked_when_the_test_command_cannot_start(repo):
@@ -336,9 +346,13 @@ def test_gate_on_python_older_than_3_11_exits_with_a_one_line_reason(tmp_path):
 PINS_CONFIG = """\
     [pins]
     artifact = "my-svc"
-    base = "main"
+    base = "{base}"
     files = {files}
     """
+
+
+def pins_config(files: str = '["../infra/deploy-*.sh"]', base: str = "main") -> str:
+    return PINS_CONFIG.format(files=files, base=base)
 
 
 def write_pyproject(repo: Path, version: str) -> None:
@@ -362,8 +376,13 @@ def pins_repo(repo) -> Path:
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "base")
     git(repo, "checkout", "-q", "-b", "feature")
-    write_config(repo, PINS_CONFIG.format(files='["../infra/deploy-*.sh"]'))
+    write_config(repo, pins_config())
     return repo
+
+
+def write_stale_pin(infra: Path) -> None:
+    """../infra/deploy-dev.sh pinning my-svc:0.0.3, older than any version used here."""
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
 
 
 def bump(repo: Path, version: str) -> subprocess.CompletedProcess:
@@ -398,7 +417,7 @@ def test_pins_on_the_new_version_and_names_containing_the_artifact_are_not_liste
 
 
 def test_later_commit_not_touching_the_version_still_lists_the_stale_pins(pins_repo, infra):
-    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    write_stale_pin(infra)
     assert bump(pins_repo, "0.0.8").returncode == 0
 
     result = commit(pins_repo, "unrelated change")
@@ -412,7 +431,7 @@ def test_later_commit_not_touching_the_version_still_lists_the_stale_pins(pins_r
 
 
 def test_version_equal_to_the_base_says_not_applicable(pins_repo, infra):
-    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    write_stale_pin(infra)
 
     assert commit(pins_repo).returncode == 0
     assert section(committed_report(pins_repo), "Stale pins") == (
@@ -432,7 +451,7 @@ def test_new_version_is_read_from_the_index_not_the_working_tree(pins_repo, infr
 
 
 def test_stale_pins_are_sorted_by_file_and_line_and_the_report_is_deterministic(pins_repo, infra):
-    write_config(pins_repo, PINS_CONFIG.format(
+    write_config(pins_repo, pins_config(
         files='["../infra/z-*.sh", "../infra/a-*.sh", "../infra/a-dev.sh"]'))
     (infra / "z-prod.sh").write_text("my-svc:0.0.1\n")
     (infra / "a-dev.sh").write_text("x\nmy-svc:0.0.2\nmy-svc:0.0.6\n")
@@ -450,7 +469,7 @@ def test_stale_pins_are_sorted_by_file_and_line_and_the_report_is_deterministic(
 
 
 def test_version_bump_with_every_pin_on_the_new_version_says_none(pins_repo):
-    write_config(pins_repo, PINS_CONFIG.format(files='["deploy/*.yml"]'))
+    write_config(pins_repo, pins_config(files='["deploy/*.yml"]'))
     (pins_repo / "deploy").mkdir()
     (pins_repo / "deploy" / "compose.yml").write_text("image: my-svc:0.0.8\n")
 
@@ -460,34 +479,23 @@ def test_version_bump_with_every_pin_on_the_new_version_says_none(pins_repo):
     assert section(report, "Skipped tests") == "not configured"
 
 
-def assert_blocked_after_base(repo: Path, result: subprocess.CompletedProcess, reason: str,
-                              head_before: str) -> None:
-    assert result.returncode != 0
-    assert "Traceback" not in result.stderr
-    blocked = [line for line in result.stderr.splitlines() if line.startswith("gate: blocked:")]
-    assert blocked and reason in blocked[0], result.stderr
-    assert git(repo, "rev-parse", "HEAD").stdout == head_before
-
-
 def test_commit_is_blocked_when_the_base_revision_cannot_be_resolved(pins_repo, infra):
-    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
-    write_config(pins_repo, PINS_CONFIG.replace('"main"', '"no-such-base"').format(
-        files='["../infra/deploy-*.sh"]'))
-    head = git(pins_repo, "rev-parse", "HEAD").stdout
+    write_stale_pin(infra)
+    write_config(pins_repo, pins_config(base="no-such-base"))
+    head_before = head(pins_repo)
 
-    assert_blocked_after_base(pins_repo, bump(pins_repo, "0.0.8"), "no-such-base", head)
+    assert_blocked(pins_repo, bump(pins_repo, "0.0.8"), "no-such-base", head_before)
 
 
 def test_commit_is_blocked_when_the_version_file_is_missing_at_the_base(pins_repo, infra):
-    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
-    write_config(pins_repo, PINS_CONFIG.format(files='["../infra/deploy-*.sh"]')
-                 + 'version_file = "svc/pyproject.toml"\n')
+    write_stale_pin(infra)
+    write_config(pins_repo, pins_config() + 'version_file = "svc/pyproject.toml"\n')
     (pins_repo / "svc").mkdir()
     (pins_repo / "svc" / "pyproject.toml").write_text('[project]\nversion = "0.0.8"\n')
     git(pins_repo, "add", "svc/pyproject.toml")
-    head = git(pins_repo, "rev-parse", "HEAD").stdout
+    head_before = head(pins_repo)
 
-    assert_blocked_after_base(pins_repo, commit(pins_repo), "svc/pyproject.toml", head)
+    assert_blocked(pins_repo, commit(pins_repo), "svc/pyproject.toml", head_before)
 
 
 @pytest.mark.parametrize("pyproject, reason", [
@@ -496,28 +504,86 @@ def test_commit_is_blocked_when_the_version_file_is_missing_at_the_base(pins_rep
     ("[project]\nversion = 8\n", "[project].version"),
 ])
 def test_commit_is_blocked_when_the_new_version_cannot_be_read(pins_repo, infra, pyproject, reason):
-    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    write_stale_pin(infra)
     (pins_repo / "pyproject.toml").write_text(pyproject)
     git(pins_repo, "add", "pyproject.toml")
-    head = git(pins_repo, "rev-parse", "HEAD").stdout
+    head_before = head(pins_repo)
 
-    assert_blocked_after_base(pins_repo, commit(pins_repo), reason, head)
+    assert_blocked(pins_repo, commit(pins_repo), reason, head_before)
 
 
 def test_commit_is_blocked_when_a_deploy_glob_matches_no_file(pins_repo, infra):
-    write_config(pins_repo, PINS_CONFIG.format(
+    write_config(pins_repo, pins_config(
         files='["../infra/deploy-*.sh", "../infra/missing-*.sh"]'))
-    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
-    head = git(pins_repo, "rev-parse", "HEAD").stdout
+    write_stale_pin(infra)
+    head_before = head(pins_repo)
 
-    assert_blocked_after_base(pins_repo, bump(pins_repo, "0.0.8"), "../infra/missing-*.sh", head)
+    assert_blocked(pins_repo, bump(pins_repo, "0.0.8"), "../infra/missing-*.sh", head_before)
 
 
 def test_commit_is_blocked_when_a_deploy_file_cannot_be_read(pins_repo, infra):
     (infra / "deploy-dir.sh").mkdir()
-    head = git(pins_repo, "rev-parse", "HEAD").stdout
+    head_before = head(pins_repo)
 
-    assert_blocked_after_base(pins_repo, bump(pins_repo, "0.0.8"), "deploy-dir.sh", head)
+    assert_blocked(pins_repo, bump(pins_repo, "0.0.8"), "deploy-dir.sh", head_before)
+
+
+def test_commit_is_blocked_when_a_deploy_file_is_not_utf8(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_bytes(b"my-svc:0.0.3\n# \xff\n")
+    head_before = head(pins_repo)
+
+    assert_blocked(pins_repo, bump(pins_repo, "0.0.8"),
+                   "cannot read deploy file ../infra/deploy-dev.sh", head_before)
+
+
+def test_commit_is_blocked_when_the_staged_version_file_is_not_utf8(pins_repo, infra):
+    write_stale_pin(infra)
+    (pins_repo / "pyproject.toml").write_bytes(b'[project]\nversion = "0.0.8"\n# \xff\n')
+    git(pins_repo, "add", "pyproject.toml")
+    head_before = head(pins_repo)
+
+    assert_blocked(pins_repo, commit(pins_repo), "pyproject.toml at the index is not UTF-8",
+                   head_before)
+
+
+def move_base_to_pyproject(repo: Path, pyproject: str) -> None:
+    """Point main at a commit whose pyproject.toml is ``pyproject``, then stage a
+    valid 0.0.8 so only the base side is unreadable."""
+    (repo / "pyproject.toml").write_text(pyproject)
+    git(repo, "add", "pyproject.toml")
+    git(repo, "commit", "-q", "--no-verify", "-m", "unreadable base")
+    git(repo, "branch", "-f", "main", "HEAD")
+    write_pyproject(repo, "0.0.8")
+    git(repo, "add", "pyproject.toml")
+
+
+def test_commit_is_blocked_when_the_version_file_at_the_base_is_not_valid_toml(pins_repo, infra):
+    write_stale_pin(infra)
+    move_base_to_pyproject(pins_repo, "[project\nversion = '0.0.7'\n")
+    head_before = head(pins_repo)
+
+    assert_blocked(pins_repo, commit(pins_repo), "pyproject.toml at main: invalid TOML",
+                   head_before)
+
+
+def test_commit_is_blocked_when_the_version_file_at_the_base_has_no_project_version(
+        pins_repo, infra):
+    write_stale_pin(infra)
+    move_base_to_pyproject(pins_repo, "[project]\nname = 'my-svc'\n")
+    head_before = head(pins_repo)
+
+    assert_blocked(pins_repo, commit(pins_repo),
+                   "pyproject.toml at main: no [project].version string", head_before)
+
+
+def test_unchanged_version_with_a_deploy_glob_matching_no_file_commits(pins_repo):
+    write_config(pins_repo, pins_config(files='["../infra/missing-*.sh"]'))
+
+    result = commit(pins_repo)
+
+    assert result.returncode == 0, result.stderr
+    assert section(committed_report(pins_repo), "Stale pins") == (
+        "not applicable: version unchanged (0.0.7)")
 
 
 @pytest.mark.parametrize("body, reason", [

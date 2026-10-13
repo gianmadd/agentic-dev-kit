@@ -22,6 +22,7 @@ from typing import Any, Mapping  # noqa: E402
 
 REPORT_PATH = ".workflow/gate-report.md"
 CONFIG_PATH = ".workflow/gate.toml"
+INDEX = ":"          # the git revision of the index being committed
 
 HOOKS_DIR = Path(__file__).resolve().parent / "hooks"
 
@@ -67,8 +68,8 @@ class StalePin:
 class Pins:
     old: str                            # version at base
     new: str                            # version at rev
-    stale: tuple[StalePin, ...]         # sorted by (path, line); empty when old == new
-    artifact: str = ""                  # for rendering "pins <artifact>:<version>"
+    stale: tuple[StalePin, ...]         # sorted by (path, line, version); empty when old == new
+    artifact: str                       # for rendering "pins <artifact>:<version>"
 
 
 @dataclass(frozen=True)
@@ -178,9 +179,9 @@ def parse_junit(xml_text: str) -> tuple[SkippedTest, ...]:
 
 
 def read_version(repo: Path, version_file: str, rev: str) -> str:
-    """[project].version of ``version_file`` at git revision ``rev`` (":" = the index)."""
-    spec = f":{version_file}" if rev == ":" else f"{rev}:{version_file}"
-    where = "the index" if rev == ":" else rev
+    """[project].version of ``version_file`` at git revision ``rev`` (INDEX = the index)."""
+    spec = f"{INDEX}{version_file}" if rev == INDEX else f"{rev}:{version_file}"
+    where = "the index" if rev == INDEX else rev
     try:
         text = _git(repo, "show", spec, what=f"read {version_file} at {where}")
     except UnicodeDecodeError:
@@ -196,23 +197,19 @@ def read_version(repo: Path, version_file: str, rev: str) -> str:
     return version
 
 
-def _pin_pattern(artifact: str) -> re.Pattern[str]:
-    # The lookbehind keeps "other-my-svc:" from matching "my-svc"; the ":"
-    # right after the name keeps "my-svc-extra:" out.
-    return re.compile(r"(?<![A-Za-z0-9._-])" + re.escape(artifact)
-                      + r":v?(\d+(?:\.\d+)*[0-9A-Za-z.+-]*)")
-
-
 def scan_pins(repo: Path, cfg: PinsConfig, new_version: str) -> tuple[StalePin, ...]:
     """Every "<artifact>:<version>" in the deploy files whose version differs from
-    ``new_version``, sorted by (path, line). Files are read from the filesystem."""
+    ``new_version``, sorted by (path, line, version). Files are read from the filesystem."""
     paths: set[str] = set()
-    for pattern in cfg.files:
-        matched = glob.glob(pattern, root_dir=repo, recursive=True)
+    for file_glob in cfg.files:
+        matched = glob.glob(file_glob, root_dir=repo, recursive=True)
         if not matched:
-            raise GateError(f"pins.files: {pattern!r} matches no file")
+            raise GateError(f"pins.files: {file_glob!r} matches no file")
         paths.update(matched)
-    pattern = _pin_pattern(cfg.artifact)
+    # The lookbehind keeps "other-my-svc:" from matching "my-svc"; the ":"
+    # right after the name keeps "my-svc-extra:" out.
+    pin = re.compile(r"(?<![A-Za-z0-9._-])" + re.escape(cfg.artifact)
+                     + r":v?(\d+(?:\.\d+)*[0-9A-Za-z.+-]*)")
     stale = []
     for path in paths:
         try:
@@ -221,7 +218,7 @@ def scan_pins(repo: Path, cfg: PinsConfig, new_version: str) -> tuple[StalePin, 
             raise GateError(f"cannot read deploy file {path}: {e}")
         for number, line in enumerate(text.splitlines(), start=1):
             stale.extend(StalePin(path=path, line=number, version=m.group(1))
-                         for m in pattern.finditer(line) if m.group(1) != new_version)
+                         for m in pin.finditer(line) if m.group(1) != new_version)
     return tuple(sorted(stale, key=lambda p: (p.path, p.line, p.version)))
 
 
@@ -317,7 +314,7 @@ def install(repo: Path) -> None:
 
 def compute_report(repo: Path, cfg: GateConfig, rev: str) -> Report:
     """Run every configured check; ``rev`` is the git revision whose versioned
-    files are read (":" = the index being committed)."""
+    files are read (INDEX = the index being committed)."""
     skips = run_skips(repo, cfg.skips) if cfg.skips else None
     pins = check_pins(repo, cfg.pins, rev) if cfg.pins else None
     return Report(skips=skips, pins=pins)
@@ -327,7 +324,7 @@ def pre_commit(repo: Path) -> int:
     """0 = report written and staged; 1 = a configured check cannot run (blocked)."""
     try:
         cfg = load_config(repo)
-        write_and_stage(repo, render_report(compute_report(repo, cfg, rev=":")))
+        write_and_stage(repo, render_report(compute_report(repo, cfg, rev=INDEX)))
     except GateError as e:
         print(f"gate: blocked: {e}", file=sys.stderr)
         return 1
