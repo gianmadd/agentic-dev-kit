@@ -133,8 +133,39 @@ but the main index keeps the previous report afterwards (`git status` shows
 `.workflow/gate-report.md` modified) until the next commit.
 
 Known bypasses: `git commit --no-verify`, changing `core.hooksPath`, editing
-the gate. Detecting them after the fact is planned (a `final` mode), not
-implemented.
+the gate. The `final` mode detects them after the fact.
+
+### Final mode
+
+Run it on the final working tree — by a person before review, in CI, or by a
+bench outside git — after the last commit of a session:
+
+```bash
+python3 ~/agentic-dev-kit/guards/gate.py final [/path/to/repo]   # default: the cwd
+```
+
+It recomputes the report at `HEAD` (the same checks as the hook; versioned
+files such as `version_file` are read at `HEAD`, deploy files and the test run
+from the filesystem) and compares it with the committed one. It prints one
+line per problem on stderr as `gate: final: <problem>`, in this order:
+
+- `uncommitted tracked changes` — staged or unstaged; `final` verifies the
+  committed state. Untracked files are ignored (e.g. a PR description file).
+- `no report committed` — `HEAD` has no `.workflow/gate-report.md` (commits
+  made before the install, or with `--no-verify`).
+- `report stale` — the committed report differs from the recompute; a
+  unified diff committed → recomputed is indented below the line.
+- `configured check cannot run` — the reason, as the hook would block (with
+  the test command's console output below it, if any).
+- `hook path not pointing at the gate` — the repo-local `core.hooksPath` is
+  unset or resolves (relative paths from the top level) elsewhere than this
+  kit's `guards/hooks`.
+- `gate files modified in the kit` — `git status` of the kit checkout lists
+  changes under `guards/` (edits or new files).
+- `cannot verify gate integrity` — the kit is not a git checkout.
+
+Exit 0, with no output, only when the committed report is present and current
+and the hook intact; 1 otherwise; 2 on bad arguments.
 
 ## Caveats
 

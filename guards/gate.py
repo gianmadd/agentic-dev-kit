@@ -1,8 +1,11 @@
 """Pre-commit gate: compute review facts into the commit.
 
 Run by guards/hooks/pre-commit on every `git commit` once installed with
-`install.sh --gate <repo>`. Standard library only.
+`install.sh --gate <repo>`; `gate.py final [<repo>]` verifies afterwards that
+the committed report is current and the hook intact. Standard library only.
 """
+import contextlib
+import difflib
 import glob
 import os
 import re
@@ -25,6 +28,7 @@ CONFIG_PATH = ".workflow/gate.toml"
 INDEX = ":"          # rev value meaning "the index being committed" (not a revspec)
 
 HOOKS_DIR = Path(__file__).resolve().parent / "hooks"
+KIT_DIR = HOOKS_DIR.parent.parent     # the checkout containing guards/
 
 
 class GateError(Exception):
@@ -332,6 +336,102 @@ def pre_commit(repo: Path) -> int:
     return 0
 
 
+@dataclass(frozen=True)
+class Problem:
+    message: str                     # one line
+    detail: str = ""                 # e.g. the unified diff of a stale report
+
+
+def _changed_paths(repo: Path, *args: str, what: str) -> list[str]:
+    """Paths listed by `git status --porcelain <args>` (renames as "old -> new")."""
+    out = _git(repo, "status", "--porcelain", *args, what=what)
+    # _git strips the output, so the first line may have lost its leading status column.
+    return [line.split(maxsplit=1)[1] for line in out.splitlines()]
+
+
+def final_problems(repo: Path) -> tuple[Problem, ...]:
+    """Everything that makes the committed state unverified, in reporting order.
+
+    A check that cannot run is a Problem (inconclusive = fail), never a traceback.
+    """
+    try:
+        repo = Path(_git(repo, "rev-parse", "--show-toplevel", what=f"find the work tree of {repo}"))
+    except GateError as e:
+        return (Problem(f"configured check cannot run: {e}"),)
+    found = []
+    try:
+        changed = _changed_paths(repo, "--untracked-files=no", what="read git status")
+    except GateError as e:
+        found.append(Problem(f"configured check cannot run: {e}"))
+    else:
+        if changed:
+            found.append(Problem(f"uncommitted tracked changes: {', '.join(changed)}"))
+    try:
+        committed = _git(repo, "show", f"HEAD:{REPORT_PATH}", what="read the committed report")
+    except GateError:
+        committed = None
+        found.append(Problem(f"no report committed: HEAD has no {REPORT_PATH}"))
+    # The test command's console output is kept only to explain a failure.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as console:
+        try:
+            with contextlib.redirect_stderr(console):
+                recomputed = render_report(compute_report(repo, load_config(repo), rev="HEAD"))
+        except GateError as e:
+            console.seek(0)
+            cannot_run = Problem(f"configured check cannot run: {e}", console.read().strip())
+        else:
+            cannot_run = None
+    if cannot_run is None and committed is not None and committed + "\n" != recomputed:
+        diff = difflib.unified_diff((committed + "\n").splitlines(keepends=True),
+                                    recomputed.splitlines(keepends=True),
+                                    fromfile="committed", tofile="recomputed")
+        found.append(Problem(f"report stale: the committed {REPORT_PATH} differs from "
+                             "the recompute at HEAD", "".join(diff).rstrip("\n")))
+    if cannot_run is not None:
+        found.append(cannot_run)
+    return (*found, *hooks_problems(repo))
+
+
+def hooks_problems(repo: Path) -> tuple[Problem, ...]:
+    """The repo-local core.hooksPath must resolve to HOOKS_DIR and the kit's
+    guards/ must be unchanged in its git checkout."""
+    found = []
+    try:
+        top = _git(repo, "rev-parse", "--show-toplevel", what=f"find the work tree of {repo}")
+        current = _git(repo, "config", "--local", "--type=path", "--default", "", "--get",
+                       "core.hooksPath", what=f"read core.hooksPath in {repo}")
+    except GateError as e:
+        found.append(Problem(f"hook path not pointing at the gate: {e}"))
+    else:
+        # A relative hooksPath is relative to the top level, as git reads it.
+        if not current or (Path(top) / current).resolve() != HOOKS_DIR:
+            found.append(Problem("hook path not pointing at the gate: core.hooksPath is "
+                                 f"{repr(current) if current else 'unset'}, expected {HOOKS_DIR}"))
+    try:
+        _git(KIT_DIR, "rev-parse", "--show-toplevel", what="find the kit checkout")
+    except GateError:
+        found.append(Problem(f"cannot verify gate integrity: the kit {KIT_DIR} is not a git checkout"))
+        return tuple(found)
+    try:
+        modified = _changed_paths(KIT_DIR, "--", "guards", what="read git status of the kit")
+    except GateError as e:
+        found.append(Problem(f"cannot verify gate integrity: {e}"))
+    else:
+        if modified:
+            found.append(Problem(f"gate files modified in the kit {KIT_DIR}: {', '.join(modified)}"))
+    return tuple(found)
+
+
+def final(repo: Path) -> int:
+    """0 = the committed report is present and current and the hook intact; 1 otherwise."""
+    found = final_problems(repo)
+    for problem in found:
+        print(f"gate: final: {problem.message}", file=sys.stderr)
+        if problem.detail:
+            print("\n".join(f"  {line}" for line in problem.detail.splitlines()), file=sys.stderr)
+    return 1 if found else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args == ["pre-commit"]:
@@ -345,7 +445,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"gate: installed in {args[1]} (core.hooksPath = {HOOKS_DIR})")
         return 0
-    print("usage: gate.py pre-commit | gate.py install <repo>", file=sys.stderr)
+    if args[:1] == ["final"] and len(args) <= 2:
+        return final(Path(args[1]) if len(args) == 2 else Path.cwd())
+    print("usage: gate.py pre-commit | gate.py install <repo> | gate.py final [<repo>]",
+          file=sys.stderr)
     return 2
 
 

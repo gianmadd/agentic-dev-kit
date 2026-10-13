@@ -776,3 +776,278 @@ def test_install_sh_gate_flag_with_a_wrong_argument_count_prints_usage_and_exits
 def test_install_into_a_directory_that_is_not_a_repo_fails_with_a_reason(tmp_path, git_env, capsys):
     assert gate.main(["install", str(tmp_path / "nowhere")]) == 1
     assert "gate: install failed:" in capsys.readouterr().err
+
+
+# ── final mode: recompute, staleness, hook tampering ─────────────────
+#
+# These tests run a *copy* of the kit's guards/ under tmp_path, so the copy's
+# HOOKS_DIR and its git checkout are what `final` verifies: the real kit's
+# working tree (dirty while it is being developed) never leaks into a verdict.
+
+
+FINAL = "gate: final: "
+
+
+def copy_kit(dest: Path, *, checkout: bool) -> Path:
+    """A copy of the kit's guards/ at ``dest``; committed in its own repo when ``checkout``."""
+    import shutil
+    shutil.copytree(KIT / "guards", dest / "guards",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (dest / "README.md").write_text("kit copy\n")
+    if checkout:
+        git(dest, "init", "-q")
+        git(dest, "add", "-A")
+        git(dest, "-c", "user.name=Kit", "-c", "user.email=kit@example.com",
+            "commit", "-q", "-m", "kit")
+    return dest
+
+
+@pytest.fixture
+def kit(tmp_path, git_env) -> Path:
+    """A kit copy that is a clean git checkout."""
+    return copy_kit(tmp_path / "kit", checkout=True)
+
+
+@pytest.fixture
+def plain_kit(tmp_path, git_env) -> Path:
+    """A kit copy that is not a git checkout."""
+    return copy_kit(tmp_path / "plain-kit", checkout=False)
+
+
+def run_gate(kit: Path, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(kit / "guards" / "gate.py"), *args],
+                          cwd=cwd, capture_output=True, text=True)
+
+
+def problems(result: subprocess.CompletedProcess) -> list[str]:
+    """The one-line problems `final` printed, without the prefix."""
+    return [line[len(FINAL):] for line in result.stderr.splitlines() if line.startswith(FINAL)]
+
+
+def make_repo(path: Path, kit: Path) -> Path:
+    """A repo with the copied gate installed and a fake runner skipping nothing,
+    committed through the gate: clean, current and intact."""
+    path.mkdir()
+    git(path, "init", "-q")
+    git(path, "config", "--local", "user.name", "Test")
+    git(path, "config", "--local", "user.email", "test@example.com")
+    installed = run_gate(kit, "install", str(path))
+    assert installed.returncode == 0, installed.stderr
+    runner_config(path, junit_runner(
+        '<testsuite><testcase classname="pkg.alpha" name="test_ok"/></testsuite>'))
+    (path / "file.txt").write_text("v1")
+    git(path, "add", "-A")
+    committed = git(path, "commit", "-q", "-m", "first", check=False)
+    assert committed.returncode == 0, committed.stderr
+    return path
+
+
+@pytest.fixture
+def clean(tmp_path, kit) -> Path:
+    return make_repo(tmp_path / "clean", kit)
+
+
+def final(kit: Path, repo: Path) -> subprocess.CompletedProcess:
+    return run_gate(kit, "final", str(repo))
+
+
+def test_final_on_a_clean_current_intact_repo_exits_0_and_prints_nothing(kit, clean):
+    result = final(kit, clean)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "" and result.stderr == ""
+
+
+@pytest.mark.parametrize("change, reported", [
+    ("unstaged edit", True),
+    ("staged edit", True),
+    ("untracked file", False),
+])
+def test_final_reports_uncommitted_tracked_changes_but_ignores_untracked_files(
+        kit, clean, change, reported):
+    if change == "untracked file":
+        (clean / "PR-DESCRIPTION.md").write_text("why\n")
+    else:
+        (clean / "file.txt").write_text("v2")
+        if change == "staged edit":
+            git(clean, "add", "file.txt")
+
+    result = final(kit, clean)
+
+    found = [p for p in problems(result) if p.startswith("uncommitted tracked changes")]
+    assert bool(found) == reported, result.stderr
+    assert result.returncode == (1 if reported else 0)
+    if reported:
+        assert "file.txt" in found[0]
+
+
+def test_final_says_no_report_committed_when_the_branch_was_committed_without_the_gate(kit, clean):
+    assert final(kit, clean).returncode == 0          # twin: committed through the gate
+    git(clean, "rm", "-q", gate.REPORT_PATH)
+    git(clean, "commit", "-q", "--no-verify", "-m", "drop the report")
+
+    result = final(kit, clean)
+
+    assert result.returncode == 1
+    assert problems(result) == [f"no report committed: HEAD has no {gate.REPORT_PATH}"]
+
+
+def test_final_says_report_stale_with_a_diff_showing_a_skip_added_without_the_hook(kit, clean):
+    assert final(kit, clean).returncode == 0          # twin: the committed report is current
+    (clean / "runner.py").write_text(textwrap.dedent(junit_runner(
+        '<testsuite><testcase classname="pkg.alpha" name="test_ok"/>'
+        '<testcase classname="pkg.new" name="test_hidden"><skipped message="later"/></testcase>'
+        '</testsuite>')))
+    git(clean, "add", "runner.py")
+    git(clean, "commit", "-q", "--no-verify", "-m", "skip a test quietly")
+
+    result = final(kit, clean)
+
+    assert result.returncode == 1
+    assert len(problems(result)) == 1 and problems(result)[0].startswith("report stale")
+    detail = result.stderr.split("\n", 1)[1]
+    assert "--- committed" in detail and "+++ recomputed" in detail
+    assert "+- `pkg.new::test_hidden` — later" in detail
+    assert "-none" in detail
+    assert all(line.startswith("  ") for line in detail.splitlines())
+
+
+def test_final_reports_a_configured_check_that_cannot_run_without_a_traceback(kit, clean):
+    write_config(clean, """\
+        [skips]
+        command = ["no-such-test-runner-xyz", "-q"]
+        """)
+    git(clean, "add", "-A")
+    git(clean, "commit", "-q", "--no-verify", "-m", "broken runner")
+
+    result = final(kit, clean)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert problems(result) == [
+        "configured check cannot run: test command cannot start: no-such-test-runner-xyz: "
+        "No such file or directory"]
+
+
+@pytest.mark.parametrize("hooks_path, reported", [
+    (None, True),
+    (".husky", True),
+    ("relative", False),
+    ("trailing-dot", False),
+])
+def test_final_reports_a_hook_path_not_pointing_at_the_gate_and_accepts_other_spellings(
+        kit, clean, hooks_path, reported):
+    hooks = kit / "guards" / "hooks"
+    if hooks_path is None:
+        git(clean, "config", "--local", "--unset", "core.hooksPath")
+    else:
+        value = {"relative": os.path.relpath(hooks, clean),
+                 "trailing-dot": f"{hooks}/."}.get(hooks_path, hooks_path)
+        git(clean, "config", "--local", "core.hooksPath", value)
+
+    result = final(kit, clean)
+
+    found = [p for p in problems(result) if p.startswith("hook path not pointing at the gate")]
+    assert bool(found) == reported, result.stderr
+    assert result.returncode == (1 if reported else 0)
+
+
+@pytest.mark.parametrize("tamper, reported", [
+    ("edit gate.py", True),
+    ("add a hook", True),
+    ("edit outside guards", False),
+])
+def test_final_reports_gate_files_modified_in_the_kit_checkout(kit, clean, tamper, reported):
+    if tamper == "edit gate.py":
+        with open(kit / "guards" / "gate.py", "a") as f:
+            f.write("# tampered\n")
+    elif tamper == "add a hook":
+        (kit / "guards" / "hooks" / "pre-push").write_text("#!/bin/sh\n")
+    else:
+        (kit / "README.md").write_text("edited\n")
+
+    result = final(kit, clean)
+
+    found = [p for p in problems(result) if p.startswith("gate files modified in the kit")]
+    assert bool(found) == reported, result.stderr
+    assert result.returncode == (1 if reported else 0)
+
+
+def test_final_cannot_verify_gate_integrity_when_the_kit_is_not_a_git_checkout(
+        tmp_path, plain_kit):
+    repo = make_repo(tmp_path / "plain-repo", plain_kit)
+
+    result = final(plain_kit, repo)
+
+    assert result.returncode == 1
+    assert problems(result) == [
+        f"cannot verify gate integrity: the kit {plain_kit} is not a git checkout"]
+
+
+def test_final_with_a_repo_argument_from_another_cwd_matches_final_from_the_repo_top(
+        kit, clean, tmp_path):
+    (clean / "runner.py").write_text(textwrap.dedent(junit_runner(
+        '<testsuite><testcase classname="pkg.new" name="test_x"><skipped/></testcase></testsuite>')))
+    git(clean, "commit", "-q", "--no-verify", "-am", "stale")
+    elsewhere = tmp_path / "elsewhere" / "deeper"
+    elsewhere.mkdir(parents=True)
+
+    from_top = run_gate(kit, "final", cwd=clean)
+    from_elsewhere = run_gate(kit, "final", str(clean), cwd=elsewhere)
+
+    assert from_top.returncode == from_elsewhere.returncode == 1
+    assert from_top.stderr == from_elsewhere.stderr
+    assert problems(from_top) and problems(from_top)[0].startswith("report stale")
+
+
+def test_final_reports_several_problems_in_the_specified_order(kit, tmp_path):
+    repo = tmp_path / "many"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    write_config(repo, '[skips]\ncommand = ["no-such-test-runner-xyz"]\n')
+    (repo / "file.txt").write_text("v1")
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=T", "-c", "user.email=t@example.com",
+        "commit", "-q", "--no-verify", "-m", "no gate")
+    (repo / "file.txt").write_text("v2")
+    with open(kit / "guards" / "gate.py", "a") as f:
+        f.write("# tampered\n")
+
+    result = final(kit, repo)
+
+    assert result.returncode == 1
+    assert [p.split(":", 1)[0] for p in problems(result)] == [
+        "uncommitted tracked changes",
+        "no report committed",
+        "configured check cannot run",
+        "hook path not pointing at the gate",
+        "gate files modified in the kit " + str(kit),
+    ]
+
+
+def test_final_recomputes_from_the_head_version_while_a_staged_bump_is_an_uncommitted_change(
+        tmp_path, kit, infra):
+    repo = make_repo(tmp_path / "repo", kit)
+    write_pyproject(repo, "0.0.7")
+    write_config(repo, "# no checks at the base\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-verify", "-m", "base on main")
+    git(repo, "checkout", "-q", "-b", "feature")
+    write_config(repo, pins_config())
+    write_stale_pin(infra)
+    git(repo, "add", "-A")
+    assert git(repo, "commit", "-q", "-m", "pins", check=False).returncode == 0
+    assert final(kit, repo).returncode == 0
+    write_pyproject(repo, "0.0.8")
+    git(repo, "add", "pyproject.toml")
+
+    result = final(kit, repo)
+
+    assert result.returncode == 1
+    assert problems(result) == ["uncommitted tracked changes: pyproject.toml"]
+
+
+@pytest.mark.parametrize("args", [["final", "a", "b"], ["finale"]])
+def test_gate_with_bad_arguments_prints_a_usage_naming_final_and_exits_2(args, capsys):
+    assert gate.main(args) == 2
+    assert "final [<repo>]" in capsys.readouterr().err
