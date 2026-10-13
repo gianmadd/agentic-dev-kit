@@ -87,6 +87,12 @@ Configure it in that repository's `.workflow/gate.toml`:
 [skips]
 command = ["python3", "-m", "pytest", "-q"]   # argv, not a shell string
 # junit_option = "--junitxml={path}"          # default; {path} is a temp file
+
+[pins]
+artifact = "my-svc"                  # matched as my-svc:<version> (optional "v" before the version)
+base = "main"                        # any git revision: branch, tag or sha
+files = ["../infra/deploy-*.sh", "deploy/**/*.yml"]   # globs from the repo top level; may leave the repo
+# version_file = "pyproject.toml"   # default; [project].version is read
 ```
 
 On every `git commit` the gate runs `command` plus the JUnit option (with
@@ -97,11 +103,29 @@ when nothing is skipped, `not configured` when `[skips]` is absent. Skips are
 read from the JUnit report only, never from console output. Deselected tests
 are not listed: JUnit does not contain them.
 
+With `[pins]`, the gate reads `[project].version` of `version_file` at `base`
+and in the index being committed (staged content, not the working tree). If
+they are equal the `## Stale pins` section says `not applicable: version
+unchanged (<version>)` and the deploy files are not read. Otherwise it scans
+the deploy files (read from the filesystem, so they may be untracked or
+outside the repo) and lists every `<artifact>:<version>` whose version differs
+from the new one, as `` `<path>:<line>` pins <artifact>:<version> `` under
+`version <old> → <new>:`, sorted by path and line — or `version <old> → <new>:
+none`. The comparison is with `base`, not the previous commit: every later
+commit on the branch keeps listing the stale pins until they are updated.
+Name boundary: the artifact must be followed by `:` and preceded by the start
+of the line or a character other than a letter, digit, `.`, `_` or `-`, so
+`registry/my-svc:0.0.3` matches but `other-my-svc:0.0.3` and
+`my-svc-extra:0.0.3` do not. `not configured` when `[pins]` is absent.
+
 It **blocks the commit only when a configured check cannot run**: Python
 older than 3.11, missing, unreadable (or non-UTF-8) `.workflow/gate.toml`,
 invalid TOML or wrong types, a test command that cannot start, a JUnit report
-that is missing, unreadable or not parsable, or a gate report that cannot be
-written or staged. The reason is on stderr. Failing tests do not block — that
+that is missing, unreadable or not parsable, a `base` that cannot be resolved,
+a version file missing at `base` or in the index (or without a
+`[project].version` string, or not valid TOML), a deploy glob that matches no
+file (checked only when the version changed) or a deploy file that cannot be
+read, or a gate report that cannot be written or staged. The reason is on stderr. Failing tests do not block — that
 is the canonical test gate's job, not this one's.
 
 Known limitation: with `git commit <paths>` the report lands in the commit,

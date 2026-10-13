@@ -90,6 +90,12 @@ def committed_report(repo: Path) -> str:
     return git(repo, "show", f"HEAD:{gate.REPORT_PATH}").stdout
 
 
+def section(report: str, title: str) -> str:
+    """The body of ``## <title>`` up to the next section, stripped."""
+    body = report.split(f"## {title}\n", 1)[1]
+    return body.split("\n## ", 1)[0].strip()
+
+
 # ── pre-commit, end to end ───────────────────────────────────────────
 
 
@@ -144,16 +150,16 @@ def test_report_says_none_when_no_test_is_skipped(repo):
         '<testsuite><testcase classname="pkg.alpha" name="test_ok"/></testsuite>'))
 
     assert commit(repo).returncode == 0
-    section = committed_report(repo).split("## Skipped tests", 1)[1]
-    assert section.strip() == "none"
+    assert section(committed_report(repo), "Skipped tests") == "none"
 
 
 def test_report_says_not_configured_when_the_skips_section_is_absent(repo):
     write_config(repo, "# no checks configured yet\n")
 
     assert commit(repo).returncode == 0
-    section = committed_report(repo).split("## Skipped tests", 1)[1]
-    assert section.strip() == "not configured"
+    report = committed_report(repo)
+    assert section(report, "Skipped tests") == "not configured"
+    assert section(report, "Stale pins") == "not configured"
 
 
 def test_failing_tests_with_a_valid_junit_do_not_block_the_commit(repo):
@@ -322,6 +328,214 @@ def test_gate_on_python_older_than_3_11_exits_with_a_one_line_reason(tmp_path):
     assert result.returncode == 1
     assert "Traceback" not in result.stderr
     assert result.stderr.startswith("gate: blocked:") and "3.11" in result.stderr
+
+
+# ── stale pins of the artifact in deploy files ───────────────────────
+
+
+PINS_CONFIG = """\
+    [pins]
+    artifact = "my-svc"
+    base = "main"
+    files = {files}
+    """
+
+
+def write_pyproject(repo: Path, version: str) -> None:
+    (repo / "pyproject.toml").write_text(f'[project]\nname = "my-svc"\nversion = "{version}"\n')
+
+
+@pytest.fixture
+def infra(tmp_path) -> Path:
+    """A deploy-scripts directory outside the repo, reached as ../infra."""
+    path = tmp_path / "infra"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def pins_repo(repo) -> Path:
+    """Base commit on main at version 0.0.7, then a feature branch with [pins]
+    scanning ../infra/deploy-*.sh."""
+    write_pyproject(repo, "0.0.7")
+    write_config(repo, "# no checks at the base\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+    git(repo, "checkout", "-q", "-b", "feature")
+    write_config(repo, PINS_CONFIG.format(files='["../infra/deploy-*.sh"]'))
+    return repo
+
+
+def bump(repo: Path, version: str) -> subprocess.CompletedProcess:
+    write_pyproject(repo, version)
+    git(repo, "add", "pyproject.toml")
+    return commit(repo, f"bump to {version}")
+
+
+def test_version_bump_lists_a_deploy_pin_older_than_the_previous_version(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_text("#!/bin/sh\nIMAGE=registry/my-svc:0.0.3\n")
+
+    result = bump(pins_repo, "0.0.8")
+
+    assert result.returncode == 0, result.stderr
+    assert section(committed_report(pins_repo), "Stale pins") == (
+        "version 0.0.7 → 0.0.8:\n"
+        "- `../infra/deploy-dev.sh:2` pins my-svc:0.0.3")
+
+
+def test_pins_on_the_new_version_and_names_containing_the_artifact_are_not_listed(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_text(
+        "run my-svc:0.0.8\n"
+        "run my-svc:v0.0.8\n"
+        "run other-my-svc:0.0.3\n"
+        "run my-svc-extra:0.0.3\n"
+        "run my-svc:0.0.7\n")
+
+    assert bump(pins_repo, "0.0.8").returncode == 0
+    assert section(committed_report(pins_repo), "Stale pins") == (
+        "version 0.0.7 → 0.0.8:\n"
+        "- `../infra/deploy-dev.sh:5` pins my-svc:0.0.7")
+
+
+def test_later_commit_not_touching_the_version_still_lists_the_stale_pins(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    assert bump(pins_repo, "0.0.8").returncode == 0
+
+    result = commit(pins_repo, "unrelated change")
+
+    assert result.returncode == 0, result.stderr
+    assert git(pins_repo, "diff", "--quiet", "HEAD~", "HEAD", "--", "pyproject.toml",
+               check=False).returncode == 0
+    assert section(committed_report(pins_repo), "Stale pins") == (
+        "version 0.0.7 → 0.0.8:\n"
+        "- `../infra/deploy-dev.sh:1` pins my-svc:0.0.3")
+
+
+def test_version_equal_to_the_base_says_not_applicable(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+
+    assert commit(pins_repo).returncode == 0
+    assert section(committed_report(pins_repo), "Stale pins") == (
+        "not applicable: version unchanged (0.0.7)")
+
+
+def test_new_version_is_read_from_the_index_not_the_working_tree(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.9\n")
+    write_pyproject(pins_repo, "0.0.8")
+    git(pins_repo, "add", "pyproject.toml")
+    write_pyproject(pins_repo, "0.0.9")  # edited after staging: not committed
+
+    assert commit(pins_repo).returncode == 0
+    assert section(committed_report(pins_repo), "Stale pins") == (
+        "version 0.0.7 → 0.0.8:\n"
+        "- `../infra/deploy-dev.sh:1` pins my-svc:0.0.9")
+
+
+def test_stale_pins_are_sorted_by_file_and_line_and_the_report_is_deterministic(pins_repo, infra):
+    write_config(pins_repo, PINS_CONFIG.format(
+        files='["../infra/z-*.sh", "../infra/a-*.sh", "../infra/a-dev.sh"]'))
+    (infra / "z-prod.sh").write_text("my-svc:0.0.1\n")
+    (infra / "a-dev.sh").write_text("x\nmy-svc:0.0.2\nmy-svc:0.0.6\n")
+
+    assert bump(pins_repo, "0.0.8").returncode == 0
+    first = committed_report(pins_repo)
+    assert commit(pins_repo, "again").returncode == 0
+
+    assert committed_report(pins_repo) == first
+    assert section(first, "Stale pins") == (
+        "version 0.0.7 → 0.0.8:\n"
+        "- `../infra/a-dev.sh:2` pins my-svc:0.0.2\n"
+        "- `../infra/a-dev.sh:3` pins my-svc:0.0.6\n"
+        "- `../infra/z-prod.sh:1` pins my-svc:0.0.1")
+
+
+def test_version_bump_with_every_pin_on_the_new_version_says_none(pins_repo):
+    write_config(pins_repo, PINS_CONFIG.format(files='["deploy/*.yml"]'))
+    (pins_repo / "deploy").mkdir()
+    (pins_repo / "deploy" / "compose.yml").write_text("image: my-svc:0.0.8\n")
+
+    assert bump(pins_repo, "0.0.8").returncode == 0
+    report = committed_report(pins_repo)
+    assert section(report, "Stale pins") == "version 0.0.7 → 0.0.8: none"
+    assert section(report, "Skipped tests") == "not configured"
+
+
+def assert_blocked_after_base(repo: Path, result: subprocess.CompletedProcess, reason: str,
+                              head_before: str) -> None:
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    blocked = [line for line in result.stderr.splitlines() if line.startswith("gate: blocked:")]
+    assert blocked and reason in blocked[0], result.stderr
+    assert git(repo, "rev-parse", "HEAD").stdout == head_before
+
+
+def test_commit_is_blocked_when_the_base_revision_cannot_be_resolved(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    write_config(pins_repo, PINS_CONFIG.replace('"main"', '"no-such-base"').format(
+        files='["../infra/deploy-*.sh"]'))
+    head = git(pins_repo, "rev-parse", "HEAD").stdout
+
+    assert_blocked_after_base(pins_repo, bump(pins_repo, "0.0.8"), "no-such-base", head)
+
+
+def test_commit_is_blocked_when_the_version_file_is_missing_at_the_base(pins_repo, infra):
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    write_config(pins_repo, PINS_CONFIG.format(files='["../infra/deploy-*.sh"]')
+                 + 'version_file = "svc/pyproject.toml"\n')
+    (pins_repo / "svc").mkdir()
+    (pins_repo / "svc" / "pyproject.toml").write_text('[project]\nversion = "0.0.8"\n')
+    git(pins_repo, "add", "svc/pyproject.toml")
+    head = git(pins_repo, "rev-parse", "HEAD").stdout
+
+    assert_blocked_after_base(pins_repo, commit(pins_repo), "svc/pyproject.toml", head)
+
+
+@pytest.mark.parametrize("pyproject, reason", [
+    ("[project\nversion = '0.0.8'\n", "invalid TOML"),
+    ("[project]\nname = 'my-svc'\n", "[project].version"),
+    ("[project]\nversion = 8\n", "[project].version"),
+])
+def test_commit_is_blocked_when_the_new_version_cannot_be_read(pins_repo, infra, pyproject, reason):
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    (pins_repo / "pyproject.toml").write_text(pyproject)
+    git(pins_repo, "add", "pyproject.toml")
+    head = git(pins_repo, "rev-parse", "HEAD").stdout
+
+    assert_blocked_after_base(pins_repo, commit(pins_repo), reason, head)
+
+
+def test_commit_is_blocked_when_a_deploy_glob_matches_no_file(pins_repo, infra):
+    write_config(pins_repo, PINS_CONFIG.format(
+        files='["../infra/deploy-*.sh", "../infra/missing-*.sh"]'))
+    (infra / "deploy-dev.sh").write_text("my-svc:0.0.3\n")
+    head = git(pins_repo, "rev-parse", "HEAD").stdout
+
+    assert_blocked_after_base(pins_repo, bump(pins_repo, "0.0.8"), "../infra/missing-*.sh", head)
+
+
+def test_commit_is_blocked_when_a_deploy_file_cannot_be_read(pins_repo, infra):
+    (infra / "deploy-dir.sh").mkdir()
+    head = git(pins_repo, "rev-parse", "HEAD").stdout
+
+    assert_blocked_after_base(pins_repo, bump(pins_repo, "0.0.8"), "deploy-dir.sh", head)
+
+
+@pytest.mark.parametrize("body, reason", [
+    ('pins = "yes"\n', "[pins]"),
+    ('[pins]\nbase = "main"\nfiles = ["a"]\n', "pins.artifact"),
+    ('[pins]\nartifact = ""\nbase = "main"\nfiles = ["a"]\n', "pins.artifact"),
+    ('[pins]\nartifact = "a"\nfiles = ["a"]\n', "pins.base"),
+    ('[pins]\nartifact = "a"\nbase = 1\nfiles = ["a"]\n', "pins.base"),
+    ('[pins]\nartifact = "a"\nbase = "main"\nfiles = "a"\n', "pins.files"),
+    ('[pins]\nartifact = "a"\nbase = "main"\nfiles = []\n', "pins.files"),
+    ('[pins]\nartifact = "a"\nbase = "main"\nfiles = [""]\n', "pins.files"),
+    ('[pins]\nartifact = "a"\nbase = "main"\nfiles = ["a"]\nversion_file = 1\n', "pins.version_file"),
+    ('[pins]\nartifact = "a"\nbase = "main"\nfiles = ["a"]\nversion_file = ""\n', "pins.version_file"),
+])
+def test_commit_is_blocked_when_the_pins_config_has_wrong_types(repo, body, reason):
+    write_config(repo, body)
+
+    assert_blocked(repo, commit(repo), reason)
 
 
 # ── the report lands in the same commit ──────────────────────────────

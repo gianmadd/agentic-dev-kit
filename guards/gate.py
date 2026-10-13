@@ -3,7 +3,9 @@
 Run by guards/hooks/pre-commit on every `git commit` once installed with
 `install.sh --gate <repo>`. Standard library only.
 """
+import glob
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,8 +37,17 @@ class SkipsConfig:
 
 
 @dataclass(frozen=True)
+class PinsConfig:
+    artifact: str                       # matched as "<artifact>:<version>"
+    base: str                           # any git revision: branch, tag or sha
+    files: tuple[str, ...]              # globs relative to the repo top level; may leave the repo
+    version_file: str = "pyproject.toml"   # read [project].version
+
+
+@dataclass(frozen=True)
 class GateConfig:
     skips: SkipsConfig | None
+    pins: PinsConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -46,9 +57,25 @@ class SkippedTest:
 
 
 @dataclass(frozen=True)
+class StalePin:
+    path: str                           # as matched, relative to the repo top level
+    line: int                           # 1-based
+    version: str                        # the pinned version (!= new)
+
+
+@dataclass(frozen=True)
+class Pins:
+    old: str                            # version at base
+    new: str                            # version at rev
+    stale: tuple[StalePin, ...]         # sorted by (path, line); empty when old == new
+    artifact: str = ""                  # for rendering "pins <artifact>:<version>"
+
+
+@dataclass(frozen=True)
 class Report:
     """The facts written to the gate report; each further check adds a sibling field."""
     skips: tuple[SkippedTest, ...] | None
+    pins: Pins | None = None
 
 
 def load_config(repo: Path) -> GateConfig:
@@ -64,7 +91,9 @@ def load_config(repo: Path) -> GateConfig:
     except tomllib.TOMLDecodeError as e:
         raise GateError(f"{CONFIG_PATH}: invalid TOML: {e}")
     skips = data.get("skips")
-    return GateConfig(skips=None if skips is None else _parse_skips(skips))
+    pins = data.get("pins")
+    return GateConfig(skips=None if skips is None else _parse_skips(skips),
+                      pins=None if pins is None else _parse_pins(pins))
 
 
 def _parse_skips(table: Any) -> SkipsConfig:
@@ -78,6 +107,24 @@ def _parse_skips(table: Any) -> SkipsConfig:
     if not isinstance(junit_option, str):
         raise GateError(f"{CONFIG_PATH}: skips.junit_option must be a string")
     return SkipsConfig(command=tuple(command), junit_option=junit_option)
+
+
+def _parse_pins(table: Any) -> PinsConfig:
+    if not isinstance(table, dict):
+        raise GateError(f"{CONFIG_PATH}: [pins] must be a table")
+    for key in ("artifact", "base"):
+        value = table.get(key)
+        if not isinstance(value, str) or not value:
+            raise GateError(f"{CONFIG_PATH}: pins.{key} must be a non-empty string")
+    files = table.get("files")
+    if (not isinstance(files, list) or not files
+            or not all(isinstance(f, str) and f for f in files)):
+        raise GateError(f"{CONFIG_PATH}: pins.files must be a non-empty list of globs")
+    version_file = table.get("version_file", PinsConfig.version_file)
+    if not isinstance(version_file, str) or not version_file:
+        raise GateError(f"{CONFIG_PATH}: pins.version_file must be a non-empty string")
+    return PinsConfig(artifact=table["artifact"], base=table["base"],
+                      files=tuple(files), version_file=version_file)
 
 
 def clean_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -130,6 +177,61 @@ def parse_junit(xml_text: str) -> tuple[SkippedTest, ...]:
     return tuple(sorted(found, key=lambda s: s.test_id))
 
 
+def read_version(repo: Path, version_file: str, rev: str) -> str:
+    """[project].version of ``version_file`` at git revision ``rev`` (":" = the index)."""
+    spec = f":{version_file}" if rev == ":" else f"{rev}:{version_file}"
+    where = "the index" if rev == ":" else rev
+    try:
+        text = _git(repo, "show", spec, what=f"read {version_file} at {where}")
+    except UnicodeDecodeError:
+        raise GateError(f"{version_file} at {where} is not UTF-8")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise GateError(f"{version_file} at {where}: invalid TOML: {e}")
+    project = data.get("project")
+    version = project.get("version") if isinstance(project, dict) else None
+    if not isinstance(version, str) or not version:
+        raise GateError(f"{version_file} at {where}: no [project].version string")
+    return version
+
+
+def _pin_pattern(artifact: str) -> re.Pattern[str]:
+    # The lookbehind keeps "other-my-svc:" from matching "my-svc"; the ":"
+    # right after the name keeps "my-svc-extra:" out.
+    return re.compile(r"(?<![A-Za-z0-9._-])" + re.escape(artifact)
+                      + r":v?(\d+(?:\.\d+)*[0-9A-Za-z.+-]*)")
+
+
+def scan_pins(repo: Path, cfg: PinsConfig, new_version: str) -> tuple[StalePin, ...]:
+    """Every "<artifact>:<version>" in the deploy files whose version differs from
+    ``new_version``, sorted by (path, line). Files are read from the filesystem."""
+    paths: set[str] = set()
+    for pattern in cfg.files:
+        matched = glob.glob(pattern, root_dir=repo, recursive=True)
+        if not matched:
+            raise GateError(f"pins.files: {pattern!r} matches no file")
+        paths.update(matched)
+    pattern = _pin_pattern(cfg.artifact)
+    stale = []
+    for path in paths:
+        try:
+            text = (repo / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise GateError(f"cannot read deploy file {path}: {e}")
+        for number, line in enumerate(text.splitlines(), start=1):
+            stale.extend(StalePin(path=path, line=number, version=m.group(1))
+                         for m in pattern.finditer(line) if m.group(1) != new_version)
+    return tuple(sorted(stale, key=lambda p: (p.path, p.line, p.version)))
+
+
+def check_pins(repo: Path, cfg: PinsConfig, rev: str) -> Pins:
+    old = read_version(repo, cfg.version_file, cfg.base)
+    new = read_version(repo, cfg.version_file, rev)
+    stale = () if old == new else scan_pins(repo, cfg, new)
+    return Pins(old=old, new=new, stale=stale, artifact=cfg.artifact)
+
+
 def render_report(report: Report) -> str:
     """Deterministic markdown: no timestamps, skips already sorted by parse_junit."""
     lines = [
@@ -149,6 +251,17 @@ def render_report(report: Report) -> str:
         for skip in report.skips:
             reason = " ".join(skip.reason.split())
             lines.append(f"- `{skip.test_id}` — {reason}" if reason else f"- `{skip.test_id}`")
+    lines += ["", "## Stale pins", ""]
+    pins = report.pins
+    if pins is None:
+        lines.append("not configured")
+    elif pins.old == pins.new:
+        lines.append(f"not applicable: version unchanged ({pins.new})")
+    elif not pins.stale:
+        lines.append(f"version {pins.old} → {pins.new}: none")
+    else:
+        lines.append(f"version {pins.old} → {pins.new}:")
+        lines += [f"- `{p.path}:{p.line}` pins {pins.artifact}:{p.version}" for p in pins.stale]
     return "\n".join(lines) + "\n"
 
 
@@ -206,7 +319,8 @@ def compute_report(repo: Path, cfg: GateConfig, rev: str) -> Report:
     """Run every configured check; ``rev`` is the git revision whose versioned
     files are read (":" = the index being committed)."""
     skips = run_skips(repo, cfg.skips) if cfg.skips else None
-    return Report(skips=skips)
+    pins = check_pins(repo, cfg.pins, rev) if cfg.pins else None
+    return Report(skips=skips, pins=pins)
 
 
 def pre_commit(repo: Path) -> int:
