@@ -370,6 +370,15 @@ def test_install_points_repo_local_hooks_path_at_the_kit_and_is_idempotent(bare_
     assert global_cfg.read_bytes() == global_before
 
 
+def test_install_over_an_empty_hooks_path_replaces_it_with_a_single_kit_value(bare_repo):
+    git(bare_repo, "config", "--local", "core.hooksPath", "")
+
+    gate.install(bare_repo)
+
+    values = git(bare_repo, "config", "--local", "--get-all", "core.hooksPath").stdout
+    assert values.splitlines() == [str(gate.HOOKS_DIR)]
+
+
 def test_install_refuses_and_leaves_a_foreign_hooks_path_unchanged(bare_repo):
     git(bare_repo, "config", "--local", "core.hooksPath", ".husky")
 
