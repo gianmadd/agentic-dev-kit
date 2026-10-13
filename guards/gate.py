@@ -22,7 +22,7 @@ from typing import Any, Mapping  # noqa: E402
 
 REPORT_PATH = ".workflow/gate-report.md"
 CONFIG_PATH = ".workflow/gate.toml"
-INDEX = ":"          # the git revision of the index being committed
+INDEX = ":"          # rev value meaning "the index being committed" (not a revspec)
 
 HOOKS_DIR = Path(__file__).resolve().parent / "hooks"
 
@@ -180,7 +180,8 @@ def parse_junit(xml_text: str) -> tuple[SkippedTest, ...]:
 
 def read_version(repo: Path, version_file: str, rev: str) -> str:
     """[project].version of ``version_file`` at git revision ``rev`` (INDEX = the index)."""
-    spec = f"{INDEX}{version_file}" if rev == INDEX else f"{rev}:{version_file}"
+    # ":<path>" is git's revspec for <path> in the index (stage 0).
+    spec = f":{version_file}" if rev == INDEX else f"{rev}:{version_file}"
     where = "the index" if rev == INDEX else rev
     try:
         text = _git(repo, "show", spec, what=f"read {version_file} at {where}")

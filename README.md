@@ -123,8 +123,8 @@ older than 3.11, missing, unreadable (or non-UTF-8) `.workflow/gate.toml`,
 invalid TOML or wrong types, a test command that cannot start, a JUnit report
 that is missing, unreadable or not parsable, a `base` that cannot be resolved,
 a version file missing at `base` or in the index (or not UTF-8, not valid
-TOML, or without a `[project].version` string), a deploy glob that matches no
-file (checked only when the version changed) or a deploy file that cannot be
+TOML, or without a `[project].version` string), and, only when the version
+changed, a deploy glob that matches no file or a deploy file that cannot be
 read (or is not UTF-8), or a gate report that cannot be written or staged. The reason is on stderr. Failing tests do not block — that
 is the canonical test gate's job, not this one's.
 

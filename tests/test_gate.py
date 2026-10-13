@@ -532,8 +532,25 @@ def test_commit_is_blocked_when_a_deploy_file_is_not_utf8(pins_repo, infra):
     (infra / "deploy-dev.sh").write_bytes(b"my-svc:0.0.3\n# \xff\n")
     head_before = head(pins_repo)
 
-    assert_blocked(pins_repo, bump(pins_repo, "0.0.8"),
+    result = bump(pins_repo, "0.0.8")
+
+    assert_blocked(pins_repo, result,
                    "cannot read deploy file ../infra/deploy-dev.sh", head_before)
+    assert "'utf-8' codec can't decode" in result.stderr
+
+
+def test_deploy_globs_are_resolved_from_the_repo_top_not_the_process_cwd(
+        pins_repo, infra, tmp_path, monkeypatch):
+    write_stale_pin(infra)
+    # Deeper than the repo, so "../infra" from here names a directory that does not exist.
+    elsewhere = tmp_path / "elsewhere" / "deeper"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+    cfg = gate.PinsConfig(artifact="my-svc", base="main", files=("../infra/deploy-*.sh",))
+
+    stale = gate.scan_pins(pins_repo, cfg, "0.0.8")
+
+    assert stale == (gate.StalePin(path="../infra/deploy-dev.sh", line=1, version="0.0.3"),)
 
 
 def test_commit_is_blocked_when_the_staged_version_file_is_not_utf8(pins_repo, infra):
