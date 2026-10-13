@@ -3,8 +3,6 @@
 Run by guards/hooks/pre-commit on every `git commit` once installed with
 `install.sh --gate <repo>`. Standard library only.
 """
-from __future__ import annotations
-
 import os
 import subprocess
 import sys
@@ -49,6 +47,7 @@ class SkippedTest:
 
 @dataclass(frozen=True)
 class Report:
+    """The facts written to the gate report; each further check adds a sibling field."""
     skips: tuple[SkippedTest, ...] | None
 
 
@@ -60,10 +59,8 @@ def load_config(repo: Path) -> GateConfig:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise GateError(f"{CONFIG_PATH} not found: the gate is installed but not configured")
-    except UnicodeDecodeError as e:
-        raise GateError(f"{CONFIG_PATH}: not valid UTF-8: {e}")
-    except OSError as e:
-        raise GateError(f"{CONFIG_PATH}: cannot read: {e.strerror or e}")
+    except (OSError, UnicodeDecodeError) as e:
+        raise GateError(f"{CONFIG_PATH}: cannot read: {e}")
     except tomllib.TOMLDecodeError as e:
         raise GateError(f"{CONFIG_PATH}: invalid TOML: {e}")
     skips = data.get("skips")
@@ -111,10 +108,8 @@ def run_skips(repo: Path, cfg: SkipsConfig) -> tuple[SkippedTest, ...]:
             xml_text = junit.read_text(encoding="utf-8")
         except FileNotFoundError:
             raise GateError(f"test command produced no JUnit report ({' '.join(argv)})")
-        except UnicodeDecodeError as e:
-            raise GateError(f"JUnit report is not valid UTF-8: {e}")
-        except OSError as e:
-            raise GateError(f"cannot read the JUnit report: {e.strerror or e}")
+        except (OSError, UnicodeDecodeError) as e:
+            raise GateError(f"cannot read the JUnit report: {e}")
         return parse_junit(xml_text)
 
 
@@ -170,8 +165,11 @@ def _git(repo: Path, *args: str, what: str) -> str:
 
 def write_and_stage(repo: Path, text: str) -> None:
     path = repo / REPORT_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as e:
+        raise GateError(f"cannot write {REPORT_PATH}: {e}")
     _git(repo, "add", "--", REPORT_PATH, what=f"stage {REPORT_PATH}")
 
 
@@ -188,7 +186,8 @@ def install(repo: Path) -> None:
                         "pass the top level")
     current = _git(repo, "config", "--local", "--default", "", "--get", "core.hooksPath",
                    what=f"read core.hooksPath in {repo}")
-    if current == str(HOOKS_DIR):
+    # A relative hooksPath is relative to the top level, as git reads it.
+    if current and (Path(top) / current).resolve() == HOOKS_DIR.resolve():
         return
     if current:
         raise GateError(f"core.hooksPath is already set to {current!r} in {repo}; "
@@ -196,11 +195,11 @@ def install(repo: Path) -> None:
                         "if you want the gate to replace it")
     hooks = repo / _git(repo, "rev-parse", "--git-path", "hooks", what="locate .git/hooks")
     active = sorted(h.name for h in hooks.glob("*") if h.is_file() and h.suffix != ".sample")
+    _git(repo, "config", "--local", "core.hooksPath", str(HOOKS_DIR),
+         what=f"set core.hooksPath in {repo}")
     if active:
         print(f"gate: warning: these hooks in {hooks} will stop running: {', '.join(active)}",
               file=sys.stderr)
-    _git(repo, "config", "--local", "core.hooksPath", str(HOOKS_DIR),
-         what=f"set core.hooksPath in {repo}")
 
 
 def pre_commit(repo: Path) -> int:

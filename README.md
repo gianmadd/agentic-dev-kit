@@ -97,9 +97,10 @@ when nothing is skipped, `not configured` when `[skips]` is absent. Skips are
 read from the JUnit report only, never from console output. Deselected tests
 are not listed: JUnit does not contain them.
 
-It **blocks the commit only when a configured check cannot run**: missing
-`.workflow/gate.toml`, invalid TOML or wrong types, a test command that
-cannot start, or no parsable JUnit report. The reason is on stderr. Failing
+It **blocks the commit only when a configured check cannot run**: missing,
+unreadable (or non-UTF-8) `.workflow/gate.toml`, invalid TOML or wrong types,
+a test command that cannot start, a JUnit report that is missing, unreadable
+or not parsable, or a gate report that cannot be written or staged. The reason is on stderr. Failing
 tests do not block — that is the canonical test gate's job, not this one's.
 
 Known limitation: with `git commit <paths>` the report lands in the commit,

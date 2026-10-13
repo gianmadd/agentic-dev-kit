@@ -5,8 +5,6 @@ core.hooksPath points at the kit's guards/hooks, so the hook shim, the CLI
 and the checks are exercised together. Git is isolated: every git process
 gets GIT_CONFIG_GLOBAL under tmp_path and GIT_CONFIG_NOSYSTEM=1.
 """
-from __future__ import annotations
-
 import os
 import subprocess
 import sys
@@ -239,6 +237,32 @@ def test_commit_is_blocked_when_the_junit_report_has_a_non_junit_root(repo):
     assert_blocked(repo, commit(repo), "unexpected root <html>")
 
 
+def test_commit_is_blocked_when_the_junit_report_is_not_valid_utf8(repo):
+    runner_config(repo, """\
+        import sys
+        open(sys.argv[1], "wb").write(b"\\xff")
+        """)
+
+    assert_blocked(repo, commit(repo), "cannot read the JUnit report")
+
+
+def test_commit_is_blocked_when_the_junit_path_is_a_directory(repo):
+    runner_config(repo, """\
+        import os, sys
+        os.mkdir(sys.argv[1])
+        """)
+
+    assert_blocked(repo, commit(repo), "cannot read the JUnit report")
+
+
+def test_commit_is_blocked_when_the_report_cannot_be_written(repo):
+    # A directory where the report file should go makes the write fail.
+    runner_config(repo, junit_runner(TWO_SKIPS_UNSORTED))
+    (repo / gate.REPORT_PATH).mkdir()
+
+    assert_blocked(repo, commit(repo), f"cannot write {gate.REPORT_PATH}")
+
+
 def test_commit_is_blocked_when_the_report_cannot_be_staged(repo):
     # git add refuses an ignored path, so the report cannot enter the commit.
     runner_config(repo, junit_runner(TWO_SKIPS_UNSORTED))
@@ -275,6 +299,7 @@ def test_commit_is_blocked_when_the_config_is_not_valid_toml(repo):
     ('[skips]\ncommand = "pytest -q"\n', "skips.command"),
     ('[skips]\ncommand = []\n', "skips.command"),
     ('[skips]\ncommand = ["pytest", 1]\n', "skips.command"),
+    ('[skips]\ncommand = ["pytest", ""]\n', "skips.command"),
     ('[skips]\ncommand = ["pytest"]\njunit_option = 3\n', "skips.junit_option"),
     ('skips = "yes"\n', "[skips]"),
 ])
@@ -341,7 +366,7 @@ def test_install_points_repo_local_hooks_path_at_the_kit_and_is_idempotent(bare_
     gate.install(bare_repo)
     second = git(bare_repo, "config", "--local", "--get-all", "core.hooksPath").stdout
 
-    assert first == second == f"{KIT / 'guards' / 'hooks'}\n"
+    assert first == second == f"{gate.HOOKS_DIR}\n"
     assert global_cfg.read_bytes() == global_before
 
 
@@ -352,6 +377,32 @@ def test_install_refuses_and_leaves_a_foreign_hooks_path_unchanged(bare_repo):
         gate.install(bare_repo)
 
     assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == ".husky"
+
+
+@pytest.mark.parametrize("spelling", ["trailing-dot", "symlink"])
+def test_install_accepts_another_spelling_of_the_kit_hooks_path_as_already_installed(
+        bare_repo, tmp_path, spelling):
+    if spelling == "symlink":
+        same_dir = tmp_path / "kit-hooks-link"
+        same_dir.symlink_to(gate.HOOKS_DIR)
+    else:
+        same_dir = f"{gate.HOOKS_DIR}/."
+    git(bare_repo, "config", "--local", "core.hooksPath", str(same_dir))
+
+    gate.install(bare_repo)
+
+    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == str(same_dir)
+
+
+def test_install_does_not_warn_about_stopped_hooks_when_setting_the_hooks_path_fails(bare_repo, capsys):
+    (bare_repo / ".git" / "hooks" / "pre-push").write_text("#!/bin/sh\n")
+    # An existing lock file makes `git config` refuse to write.
+    (bare_repo / ".git" / "config.lock").write_text("")
+
+    with pytest.raises(gate.GateError, match="set core.hooksPath"):
+        gate.install(bare_repo)
+
+    assert "stop running" not in capsys.readouterr().err
 
 
 def test_install_warns_about_hooks_in_git_hooks_that_will_stop_running(bare_repo, capsys):
@@ -376,25 +427,26 @@ def test_install_into_a_subdirectory_of_a_repo_fails_and_leaves_its_config_alone
     assert git(bare_repo, "config", "--local", "core.hooksPath", check=False).returncode == 1
 
 
-def test_install_sh_gate_flag_installs_the_hook_without_touching_skills(tmp_path, git_env, bare_repo):
-    env = {**git_env, "HOME": str(tmp_path / "home"),
-           "AGENT_SKILLS_DIR": str(tmp_path / "skills")}
+@pytest.fixture
+def kit_env(tmp_path, git_env) -> dict[str, str]:
+    """Env for running install.sh with HOME and the skills dir under tmp_path."""
+    return {**git_env, "HOME": str(tmp_path / "home"),
+            "AGENT_SKILLS_DIR": str(tmp_path / "skills")}
 
+
+def test_install_sh_gate_flag_installs_the_hook_without_touching_skills(tmp_path, kit_env, bare_repo):
     result = subprocess.run(["bash", str(KIT / "install.sh"), "--gate", str(bare_repo)],
-                            env=env, capture_output=True, text=True)
+                            env=kit_env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
-    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == str(KIT / "guards" / "hooks")
+    assert git(bare_repo, "config", "--local", "core.hooksPath").stdout.strip() == str(gate.HOOKS_DIR)
     assert not (tmp_path / "skills").exists()
 
 
 @pytest.mark.parametrize("extra", [[], ["a", "b"]])
-def test_install_sh_gate_flag_with_a_wrong_argument_count_prints_usage_and_exits_2(tmp_path, git_env, extra):
-    env = {**git_env, "HOME": str(tmp_path / "home"),
-           "AGENT_SKILLS_DIR": str(tmp_path / "skills")}
-
+def test_install_sh_gate_flag_with_a_wrong_argument_count_prints_usage_and_exits_2(kit_env, extra):
     result = subprocess.run(["bash", str(KIT / "install.sh"), "--gate", *extra],
-                            env=env, capture_output=True, text=True)
+                            env=kit_env, capture_output=True, text=True)
 
     assert result.returncode == 2
     assert "usage:" in result.stderr and "install <repo>" in result.stderr
