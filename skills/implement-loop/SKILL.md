@@ -170,7 +170,9 @@ a **throwaway copy** — `git worktree add .claude/worktrees/mutprove-<slug> HEA
 inside the repo so agents can write there without leaving their working
 directory, and never the session's working tree. `.claude/worktrees/` must
 be git-ignored (e.g. in `.git/info/exclude`), or the copy shows up as
-untracked content in the session's own diff. Its task:
+untracked content in the session's own diff. The item's changes are not
+committed yet, so apply them to the copy first: `git add -N .` (so new
+files show in the diff), then `git diff HEAD --binary | git -C <copy> apply`. Its task:
 
 1. **The target list**, built by you from the Spec reviewer's report: for
    each declared law and each `fatal` acceptance criterion, the file and
@@ -279,6 +281,7 @@ instructions (`AGENTS.md`). Where they say to ask first, ask and wait.
 
 1. Commit the changed files (only what belongs to the task) on a branch
    named as the instructions say, with messages referencing the items.
+   Git commands are not code edits: you may run them yourself.
 2. Push the branch and open a PR linking the items. If the instructions
    require asking first, stop here: report the branch, its commits and the
    gate results, and ask whether to push and open the PR.
